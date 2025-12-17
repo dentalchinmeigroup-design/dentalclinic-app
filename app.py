@@ -61,7 +61,7 @@ def save_data_using_headers(worksheet, data_dict):
         
     worksheet.append_row(row_values)
 
-# --- 4. 輔助函數：動態計算總分 (升級版：支援小數點字串) ---
+# --- 4. 輔助函數：動態計算總分 ---
 def calculate_dynamic_score(record, suffix):
     items = get_assessment_items()
     total = 0
@@ -69,7 +69,6 @@ def calculate_dynamic_score(record, suffix):
         key = f"{item['考核項目']}{suffix}"
         val = record.get(key, 0)
         try:
-            # 先轉 float 再轉 int，解決 "9.0" 轉 int 失敗的問題
             total += int(float(val))
         except:
             total += 0
@@ -83,9 +82,8 @@ def find_row_index(all_values, name, assess_date):
         return match[0] + 2 
     return None
 
-# --- 5. Session State 初始化 (用於重置輸入框) ---
+# --- 5. Session State 初始化 ---
 def init_session_state():
-    # 初始化各個分頁的計數器，用來強制重置輸入框
     if "key_counter_self" not in st.session_state:
         st.session_state.key_counter_self = 0
     if "key_counter_primary" not in st.session_state:
@@ -135,7 +133,7 @@ def main():
     st.set_page_config(page_title="考核系統流程版", layout="wide")
     st.title("✨ 日沐 ‧ 勤美 ‧ 小日子 | 考核系統 (流程版)")
     
-    init_session_state() # 初始化計數器
+    init_session_state() 
     
     sh = connect_to_google_sheets()
     try:
@@ -162,7 +160,6 @@ def main():
         elif role == "初考主管 (管理者)": next_status = "待覆考"
         else: next_status = "待核決"
 
-        # 使用計數器作為 Key 的一部分，當計數器增加時，DataFrame 會重置
         df_key = f"df_self_{st.session_state.key_counter_self}"
         if df_key not in st.session_state:
             df = pd.DataFrame(get_assessment_items())
@@ -178,10 +175,9 @@ def main():
                 "說明": st.column_config.TextColumn(disabled=True, width="large"),
             },
             hide_index=True, use_container_width=True, 
-            key=f"editor_self_{st.session_state.key_counter_self}" # 動態 Key
+            key=f"editor_self_{st.session_state.key_counter_self}"
         )
         
-        # 動態 Key，每次送出後都會換一個新的 Key，變回空字串
         self_comment = st.text_area("自評文字", placeholder="請輸入...", 
                                     key=f"comment_self_{st.session_state.key_counter_self}")
 
@@ -212,10 +208,7 @@ def main():
                         data_to_save[f"{item}-最終"] = 0
 
                     save_data_using_headers(worksheet, data_to_save)
-
-                    # --- 關鍵修正：增加計數器，強制重置所有輸入框 ---
                     st.session_state.key_counter_self += 1
-
                     st.success(f"✅ 自評已送出！案件已轉移至【{next_status}】列表。")
                     time.sleep(1)
                     st.rerun()
@@ -247,7 +240,6 @@ def main():
                     st.markdown("---")
                     st.subheader(f"正在審核：{target_name}")
                     
-                    # 顯示動態計算的分數
                     real_self_score = calculate_dynamic_score(record, '-自評')
                     st.write(f"**員工自評總分**：{real_self_score}")
                     st.info(f"🗨️ **員工自評內容**：{record.get('自評文字', '')}")
@@ -264,7 +256,6 @@ def main():
                         })
                     
                     df_primary = pd.DataFrame(input_data)
-                    # 這裡不需要動態Key重置，因為每次選不同人都會重新渲染
                     edited_primary = st.data_editor(
                         df_primary,
                         column_config={
@@ -277,7 +268,6 @@ def main():
                         key=f"editor_primary_{st.session_state.key_counter_primary}"
                     )
 
-                    # 評語輸入框使用動態 Key，送出後會變空
                     manager_comment = st.text_area("初考評語", 
                                                    key=f"comment_primary_{st.session_state.key_counter_primary}")
                     
@@ -307,14 +297,10 @@ def main():
                                             updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[int(r['初考評分'])]]})
                                     
                                     worksheet.batch_update(updates)
-
-                                    # --- 增加計數器，重置輸入框 ---
                                     st.session_state.key_counter_primary += 1
-                                    
                                     st.success("✅ 初考完成！")
                                     time.sleep(1)
                                     st.rerun()
-
                                 except ValueError as e:
                                     st.error(f"欄位對應錯誤: {e}")
 
@@ -346,7 +332,6 @@ def main():
                     user_role = record.get('職務身份', '一般員工')
                     st.subheader(f"正在審核：{target_name} ({user_role})")
                     
-                    # 顯示動態計算的分數
                     real_self_score = calculate_dynamic_score(record, '-自評')
                     real_primary_score = calculate_dynamic_score(record, '-初考')
                     
@@ -383,7 +368,6 @@ def main():
                         key=f"editor_sec_{st.session_state.key_counter_sec}"
                     )
 
-                    # 動態 Key
                     sec_comment = st.text_area("覆考評語", 
                                                key=f"comment_sec_{st.session_state.key_counter_sec}")
                     
@@ -395,7 +379,6 @@ def main():
                                 headers = list(data[0].keys())
                                 clean_headers = [h.strip() for h in headers]
                                 updates = []
-                                
                                 try:
                                     status_col = clean_headers.index("目前狀態") + 1
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待核決"]]})
@@ -414,10 +397,7 @@ def main():
                                             updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[int(r['覆考評分'])]]})
                                     
                                     worksheet.batch_update(updates)
-
-                                    # --- 增加計數器，重置輸入框 ---
                                     st.session_state.key_counter_sec += 1
-
                                     st.success("✅ 覆考完成！")
                                     time.sleep(1)
                                     st.rerun()
@@ -455,6 +435,18 @@ def main():
 
                     st.markdown("---")
                     
+                    # --- 1. 顯示完整評語紀錄 (老闆要看全部) ---
+                    st.markdown("### 📝 各階段評語紀錄")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.info(f"**🗣️ 員工自評**\n\n{record.get('自評文字', '無')}")
+                    with c2:
+                        st.warning(f"**👮‍♂️ 初考評語**\n\n{record.get('初考評語', '無')}")
+                    with c3:
+                        st.error(f"**👩‍⚕️ 覆考評語**\n\n{record.get('覆考評語', '無')}")
+
+                    st.markdown("---")
+                    
                     real_self = calculate_dynamic_score(record, '-自評')
                     real_prim = calculate_dynamic_score(record, '-初考')
                     real_sec = calculate_dynamic_score(record, '-覆考')
@@ -468,6 +460,7 @@ def main():
                     if view_mode == "歷史已完成案件":
                         col4.metric("🏆 最終總分", real_final)
                         st.success(f"📌 最終建議：{record.get('最終建議', '')}")
+                        st.success(f"🏅 最終考績：{record.get('最終考績', '未評定')}")
                         
                         st.markdown("### 詳細成績單")
                         items = get_assessment_items()
@@ -483,7 +476,7 @@ def main():
                             })
                         st.table(pd.DataFrame(detail_rows))
                     else: 
-                        st.warning("請填寫最終成績以完成考核。")
+                        st.warning("請填寫最終成績與考績以完成考核。")
                         items = get_assessment_items()
                         input_data = []
                         for item in items:
@@ -511,7 +504,12 @@ def main():
                             hide_index=True, use_container_width=True, key="editor_boss"
                         )
                         
-                        final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
+                        with c2:
+                            # --- 2. 新增考績下拉選單 ---
+                            final_grade = st.selectbox("🏅 最終考績", ["S", "A+", "A", "A-", "B"])
                         
                         if st.button("🏆 核決並歸檔", type="primary"):
                             with st.spinner("正在歸檔..."):
@@ -523,6 +521,14 @@ def main():
                                     updates = []
                                     
                                     try:
+                                        # --- 自動檢查並新增「最終考績」欄位 ---
+                                        if "最終考績" not in clean_headers:
+                                            # 如果 Sheet 裡沒有這一欄，先加進去
+                                            st.toast("正在新增【最終考績】欄位...", icon="🔧")
+                                            worksheet.update_cell(1, len(clean_headers) + 1, "最終考績")
+                                            clean_headers.append("最終考績") # 本地更新
+                                            time.sleep(1) # 等一下 Google
+
                                         status_col = clean_headers.index("目前狀態") + 1
                                         updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["已完成"]]})
                                         
@@ -532,6 +538,10 @@ def main():
 
                                         suggest_col = clean_headers.index("最終建議") + 1
                                         updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, suggest_col), "values": [[final_action]]})
+                                        
+                                        # 寫入最終考績
+                                        grade_col = clean_headers.index("最終考績") + 1
+                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, grade_col), "values": [[final_grade]]})
 
                                         for _, r in edited_boss.iterrows():
                                             col_name = f"{r['考核項目']}-最終"
