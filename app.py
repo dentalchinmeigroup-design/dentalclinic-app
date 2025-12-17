@@ -4,7 +4,7 @@ from datetime import date
 from streamlit_gsheets import GSheetsConnection
 
 def main():
-    # 設定為寬螢幕模式，讓表格和儀表板更清楚
+    # 設定為寬螢幕模式
     st.set_page_config(page_title="專業技能考核表", layout="wide")
     
     st.title("✨ 日沐 ‧ 勤美 ‧ 小日子")
@@ -19,8 +19,8 @@ def main():
 
     st.markdown("---")
 
-    # --- 1. 考核標準與指標定義 (APP 的說明書) ---
-    with st.expander("📖 點此查看：考核指標定義 & 評分標準", expanded=False):
+    # --- 1. 考核標準與指標定義 ---
+    with st.expander("📖 點此查看：考核指標定義 & 評分標準 ", expanded=False):
         tab1, tab2 = st.tabs(["📊 評分標準 (分數級距)", "📝 指標定義說明 (詳細內容)"])
         
         with tab1:
@@ -39,7 +39,7 @@ def main():
         with tab2:
             st.warning("此為各項職能之詳細定義，評分時請參考此標準。")
             st.markdown("""
-            | 評核面向 | 考核重點 | 專業能力定義說明  |
+            | 評核面向 | 考核重點 | 專業能力定義說明 |
             | :--- | :--- | :--- |
             | **專業技能** | **跟診/櫃台** | 具備職務所需的各項專業知識與技能，能充份滿足工作需求。 |
             | **核心職能** | **勤務配合** | 遵循規範，維持良好的出勤紀律，並能在工作中展現積極的態度與持續進取的企圖心。 |
@@ -60,11 +60,11 @@ def main():
     with c3:
         assess_date = st.date_input("評量日期", date.today())
     with c4:
-        boss_name = st.text_input("最高核決", value="邱上展")
+        boss_name = st.text_input("最高核決", value="請輸入姓名")
 
     st.markdown("---")
 
-    # --- 3. 考核評分區 (核心功能) ---
+    # --- 3. 考核評分區 ---
     st.header("2. 考核項目評分")
     st.info("💡 **操作方式**：請直接點擊表格內的數字進行修改（預設 2 分）。下方儀表板會 **即時計算總分**。")
 
@@ -117,7 +117,7 @@ def main():
         key="editor"
     )
 
-    # --- 4. 即時儀表板 (Scoreboard) ---
+    # --- 4. 即時儀表板 ---
     st.markdown("### 📊 成績總覽 (自動計算)")
     
     total_self = edited_df["同仁自評"].sum()
@@ -155,62 +155,11 @@ def main():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # # --- 6. 提交按鈕 (智慧型版本) ---
+    # --- 6. 提交按鈕 (修正邏輯版) ---
     if st.button("🚀 提交完整考核表", type="primary", use_container_width=True):
         if not name:
             st.error("請務必填寫姓名！")
         else:
-            with st.spinner("正在處理龐大的考核資料..."):
+            with st.spinner("正在將資料寫入雲端..."):
                 
-                # 準備資料
-                row_data = {
-                    "姓名": name,
-                    "職等": rank,
-                    "評量日期": assess_date.strftime("%Y-%m-%d"),
-                    "初考主管": manager_1,
-                    "覆考主管": manager_2,
-                    "核決老闆": boss_name,
-                    "自評總分": total_self,
-                    "初考總分": total_init,
-                    "覆考總分": total_rev,
-                    "最終總分": total_final,
-                    "自評文字": self_comment,
-                    "初考評語": manager1_comment,
-                    "覆考評語": manager2_comment,
-                    "最終建議": action,
-                    "填寫時間": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-
-                # 攤平細項分數
-                for index, row in edited_df.iterrows():
-                    item = row["考核項目"]
-                    row_data[f"{item}_自評"] = row["同仁自評"]
-                    row_data[f"{item}_初考"] = row["初考評分"]
-                    row_data[f"{item}_覆考"] = row["覆考評分"]
-                    row_data[f"{item}_最終"] = row["最終評分"]
-
-                new_df = pd.DataFrame([row_data])
-                TARGET_SHEET = "Assessment_Data"
-
-                try:
-                    # 嘗試讀取現有資料
-                    existing_data = conn.read(worksheet=TARGET_SHEET, ttl=0)
-                    updated_df = pd.concat([existing_data, new_df], ignore_index=True)
-                    # 如果讀取成功，代表分頁存在，使用 update (但前提是欄位要夠寬，或透過下方 create 修復)
-                    conn.update(worksheet=TARGET_SHEET, data=updated_df)
-                    st.success(f"✅ 成功！資料已更新至 '{TARGET_SHEET}'。")
-                    
-                except Exception:
-                    # 【關鍵修復】: 如果讀取失敗 (分頁不存在)，或是 update 失敗 (欄位不夠)
-                    # 我們直接呼叫 create，它會自動依據資料寬度建立新分頁
-                    try:
-                        conn.create(worksheet=TARGET_SHEET, data=new_df)
-                        st.success(f"✅ 成功！已建立全新分頁 '{TARGET_SHEET}' 並存檔。")
-                    except Exception as e:
-                        st.error(f"寫入失敗，請檢查 Google 試算表權限或欄位數量。錯誤: {e}")
-                        st.stop()
-
-                st.balloons()
-
-if __name__ == "__main__":
-    main()
+                # 準備
