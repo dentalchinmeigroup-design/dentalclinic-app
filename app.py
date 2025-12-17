@@ -14,7 +14,6 @@ def connect_to_google_sheets():
     """連線到 Google Sheets"""
     spreadsheet_name = "dental_assessment_data" 
     try:
-        # 檢查 secrets 是否存在
         if "connections" not in st.secrets or "gsheets" not in st.secrets["connections"]:
             st.error("❌ 找不到 Secrets 設定！請確認 .streamlit/secrets.toml 檔案。")
             st.stop()
@@ -33,9 +32,7 @@ def connect_to_google_sheets():
 
 def main():
     st.set_page_config(page_title="專業技能考核系統", layout="wide")
-    
-    # 【DEBUG 標記 1】標題改得很顯眼，確認有沒有更新成功
-    st.title("🚨 DEBUG 模式 (版本 V3) 🚨 - 考核系統")
+    st.title("✨ 日沐 ‧ 勤美 ‧ 小日子 | 考核系統")
     
     # 初始化連線
     sh = connect_to_google_sheets()
@@ -44,11 +41,12 @@ def main():
     tab1, tab2 = st.tabs(["📝 員工/主管填寫", "🔍 後台查閱 (老闆專用)"])
 
     # ==========================================
-    # Tab 1: 填寫區
+    # Tab 1: 填寫區 (寫入資料)
     # ==========================================
     with tab1:
         st.subheader("新增考核紀錄")
         
+        # --- 1. 說明區 ---
         with st.expander("📖 查看評分標準", expanded=False):
             st.markdown("""
             * **10分**：表現卓越。
@@ -58,6 +56,7 @@ def main():
             * **0-2分**：多次不符合。
             """)
 
+        # --- 2. 資料輸入 ---
         st.markdown("### 1. 受評人資料")
         c1, c2, c3, c4 = st.columns(4)
         with c1: name = st.text_input("姓名", placeholder="請輸入姓名")
@@ -67,6 +66,7 @@ def main():
 
         st.markdown("### 2. 考核評分")
         
+        # 定義資料結構
         data_structure = [
             {"類別": "專業技能", "考核項目": "跟診技能", "說明": "器械準備熟練，無重大缺失。"},
             {"類別": "專業技能", "考核項目": "櫃台技能", "說明": "準確完成約診與行政作業。"},
@@ -82,6 +82,7 @@ def main():
             {"類別": "行政職能", "考核項目": "應變能力", "說明": "因應臨時需求，態度靈活。"},
         ]
 
+        # 建立編輯表格
         if "df_input" not in st.session_state:
             df = pd.DataFrame(data_structure)
             df["自評"] = 0
@@ -94,7 +95,6 @@ def main():
             "類別": st.column_config.TextColumn(width="small", disabled=True),
             "考核項目": st.column_config.TextColumn(width="medium", disabled=True),
             "說明": st.column_config.TextColumn(width="large", disabled=True),
-            # 強制指定為數字欄位，避免誤判為密碼
             "自評": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
             "初考": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
             "覆考": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
@@ -109,6 +109,7 @@ def main():
             height=450
         )
 
+        # 即時計算總分
         t1, t2, t3, t4 = st.columns(4)
         t1.metric("自評總分", edited_df["自評"].sum())
         t2.metric("初考總分", edited_df["初考"].sum())
@@ -140,6 +141,7 @@ def main():
                         except:
                             worksheet = sh.add_worksheet(title="Assessment_Data", rows=100, cols=100)
 
+                        # 準備資料
                         row_data = [
                             name, rank, assess_date.strftime("%Y-%m-%d"),
                             manager_1, manager_2, boss_name,
@@ -149,16 +151,19 @@ def main():
                             pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
                         ]
                         
+                        # 定義標題 (注意：這邊也要用「減號」來配合您的 Google Sheet)
                         headers = ["姓名", "職等", "日期", "初考主管", "覆考主管", "最高核決",
                                    "自評總分", "初考總分", "覆考總分", "最終總分",
                                    "自評文字", "初考評語", "覆考評語", "最終建議", "填寫時間"]
                         
                         for _, row in edited_df.iterrows():
                             item = row["考核項目"]
-                            if f"{item}_自評" not in headers:
-                                headers.extend([f"{item}_自評", f"{item}_初考", f"{item}_覆考", f"{item}_最終"])
+                            # 【修正】寫入時也改用「減號 -」
+                            if f"{item}-自評" not in headers:
+                                headers.extend([f"{item}-自評", f"{item}-初考", f"{item}-覆考", f"{item}-最終"])
                             row_data.extend([int(row["自評"]), int(row["初考"]), int(row["覆考"]), int(row["最終"])])
 
+                        # 如果是新表，先寫入標題
                         if not worksheet.get_all_values():
                             worksheet.append_row(headers)
                         
@@ -169,7 +174,7 @@ def main():
                         st.error(f"錯誤: {e}")
 
     # ==========================================
-    # Tab 2: 後台查閱
+    # Tab 2: 後台查閱 (讀取資料)
     # ==========================================
     with tab2:
         st.header("🔍 考核紀錄查詢")
@@ -221,20 +226,17 @@ def main():
 
                     st.markdown("#### 📊 細項評分表")
                     
-                    # 【DEBUG 標記 2】如果看到這個紅框，代表程式真的更新了
-                    st.error("✅ 程式碼已更新！現在應該要看到數字了 (使用 st.table 顯示)")
-
                     detail_rows = []
                     items = ["跟診技能", "櫃台技能", "跟診執行", "櫃台溝通", "勤務配合(職能)", "勤務配合(配合)", "人際協作(人際)", "人際協作(協作)", "危機處理", "基礎職能", "進階職能", "應變能力"]
                     
                     for item in items:
                         detail_rows.append({
                             "考核項目": item,
-                            # 這裡轉成字串，雙重保險
-                            "自評": str(record.get(f"{item}_自評", "-")),
-                            "初考": str(record.get(f"{item}_初考", "-")),
-                            "覆考": str(record.get(f"{item}_覆考", "-")),
-                            "最終": str(record.get(f"{item}_最終", "-")),
+                            # 【關鍵修正】這裡全部改成「減號 -」，對應您的 Google Sheet 欄位
+                            "自評": str(record.get(f"{item}-自評", "-")),
+                            "初考": str(record.get(f"{item}-初考", "-")),
+                            "覆考": str(record.get(f"{item}-覆考", "-")),
+                            "最終": str(record.get(f"{item}-最終", "-")),
                         })
                             
                     detail_df = pd.DataFrame(detail_rows)
