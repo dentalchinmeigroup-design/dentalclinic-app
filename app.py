@@ -32,7 +32,7 @@ def connect_to_google_sheets():
         st.error(f"連線失敗: {e}")
         st.stop()
 
-# --- 2. 安全讀取與寫入 (自動重試機制) ---
+# --- 2. 安全讀取與寫入 ---
 def safe_read_data(worksheet):
     for i in range(3):
         try:
@@ -121,9 +121,8 @@ def find_row_index(all_values, name, assess_date):
         return match[0] + 2 
     return None
 
-# --- 5. Session State 初始化 ---
+# --- 5. Session State ---
 def init_session_state():
-    # 初始化計數器，用於強制重置所有輸入框
     if "key_counter_self" not in st.session_state:
         st.session_state.key_counter_self = 0
     if "key_counter_primary" not in st.session_state:
@@ -174,14 +173,8 @@ def get_assessment_items():
 
 SCORE_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "N/A"]
 
-# --- 6. 新的 UI 渲染函數：直覺式條列選單 (含歷史成績顯示) ---
+# --- 6. 新的 UI 渲染函數 (已修復 Pandas 錯誤) ---
 def render_assessment_ui(prefix, key_suffix, record=None, readonly_stages=None):
-    """
-    prefix: key 前綴
-    key_suffix: 計數器，用來強制重置
-    record: 該員工的資料 (dict)
-    readonly_stages: 要顯示哪些歷史成績，例如 ['-自評', '-初考']
-    """
     items = get_assessment_items()
     user_scores = {}
     
@@ -194,13 +187,12 @@ def render_assessment_ui(prefix, key_suffix, record=None, readonly_stages=None):
                 st.markdown(f"**{idx+1}. {item['考核項目']}**")
                 st.caption(f"說明：{item['說明']}")
                 
-                # --- 顯示歷史成績邏輯 ---
-                if record and readonly_stages:
+                # 【關鍵修正】這裡明確檢查 record 是否為 None，解決 Pandas 錯誤
+                if record is not None and readonly_stages:
                     history_text = []
                     for suffix in readonly_stages:
-                        stage_name = suffix.replace("-", "") # 去掉減號顯示
+                        stage_name = suffix.replace("-", "") 
                         score = record.get(f"{item['考核項目']}{suffix}", "-")
-                        # 依照不同階段給不同顏色
                         color = "blue" if "自評" in stage_name else "orange" if "初考" in stage_name else "red"
                         history_text.append(f":{color}[{stage_name}: {score}]")
                     
@@ -208,12 +200,10 @@ def render_assessment_ui(prefix, key_suffix, record=None, readonly_stages=None):
                         st.markdown(" | ".join(history_text))
 
             with c2:
-                # 這裡的 Key 加上了 key_suffix (計數器)
-                # 當計數器 +1，這裡的 Key 就會變，Streamlit 就會把它當成新元件，自動重置為預設值
                 score = st.selectbox(
                     f"評分 ({item['考核項目']})", 
                     options=SCORE_OPTIONS,
-                    index=0, # 預設選 0
+                    index=0, 
                     key=f"{prefix}_score_{idx}_{key_suffix}", 
                     label_visibility="collapsed"
                 )
@@ -252,7 +242,6 @@ def main():
         st.header("📝 員工自評區")
         show_guidelines()
 
-        # 姓名輸入框也加上計數器，送出後清空
         col1, col2, col3 = st.columns(3)
         with col1: 
             name = st.text_input("姓名", placeholder="請輸入姓名", 
@@ -268,7 +257,7 @@ def main():
         elif role == "初考主管 (管理者)": next_status = "待覆考"
         else: next_status = "待核決"
 
-        # 使用新的渲染函數，傳入計數器
+        # 員工自評不需要傳 record 和 stages
         user_scores = render_assessment_ui("self", st.session_state.key_counter_self)
         
         self_comment = st.text_area("自評文字", placeholder="請輸入...", 
@@ -301,10 +290,7 @@ def main():
                         data_to_save[f"{item_name}-最終"] = 0
 
                     save_data_using_headers(worksheet, data_to_save)
-                    
-                    # 計數器 +1，強制重置所有輸入框
                     st.session_state.key_counter_self += 1
-                    
                     st.success(f"✅ 自評已送出！案件已轉移至【{next_status}】列表。")
                     time.sleep(1)
                     st.rerun()
@@ -340,12 +326,12 @@ def main():
                     st.write(f"**員工自評總分**：{real_self_score}")
                     st.info(f"🗨️ **員工自評內容**：{record.get('自評文字', '')}")
 
-                    # --- 顯示新的 UI，並傳入 record 顯示自評分數 ---
+                    # 這裡會正常運作了，因為 record 不是 None
                     manager_scores = render_assessment_ui(
                         "primary", 
                         st.session_state.key_counter_primary,
                         record=record,
-                        readonly_stages=["-自評"] # 顯示自評
+                        readonly_stages=["-自評"] 
                     )
 
                     manager_comment = st.text_area("初考評語", 
@@ -425,7 +411,6 @@ def main():
                     else:
                         c2.warning("*(無初考紀錄)*")
 
-                    # --- 顯示新的 UI，顯示自評與初考分數 ---
                     manager_scores = render_assessment_ui(
                         "secondary", 
                         st.session_state.key_counter_sec,
@@ -543,7 +528,6 @@ def main():
                     else: 
                         st.warning("請填寫最終成績與考績以完成考核。")
                         
-                        # --- 顯示新的 UI，顯示前三關分數 ---
                         boss_scores = render_assessment_ui(
                             "boss", 
                             st.session_state.key_counter_boss,
