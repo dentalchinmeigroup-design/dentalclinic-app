@@ -20,7 +20,7 @@ def main():
     st.markdown("---")
 
     # --- 1. 考核標準與指標定義 ---
-    with st.expander("📖 點此查看：考核指標定義 & 評分標準 ", expanded=False):
+    with st.expander("📖 點此查看：考核指標定義 & 評分標準", expanded=False):
         tab1, tab2 = st.tabs(["📊 評分標準 (分數級距)", "📝 指標定義說明 (詳細內容)"])
         
         with tab1:
@@ -162,4 +162,53 @@ def main():
         else:
             with st.spinner("正在將資料寫入雲端..."):
                 
-                # 準備
+                # 準備寫入的一列資料
+                row_data = {
+                    "姓名": name,
+                    "職等": rank,
+                    "評量日期": assess_date.strftime("%Y-%m-%d"),
+                    "初考主管": manager_1,
+                    "覆考主管": manager_2,
+                    "核決老闆": boss_name,
+                    "自評總分": total_self,
+                    "初考總分": total_init,
+                    "覆考總分": total_rev,
+                    "最終總分": total_final,
+                    "自評文字": self_comment,
+                    "初考評語": manager1_comment,
+                    "覆考評語": manager2_comment,
+                    "最終建議": action,
+                    "填寫時間": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+
+                # 攤平細項分數
+                for index, row in edited_df.iterrows():
+                    item = row["考核項目"]
+                    row_data[f"{item}_自評"] = row["同仁自評"]
+                    row_data[f"{item}_初考"] = row["初考評分"]
+                    row_data[f"{item}_覆考"] = row["覆考評分"]
+                    row_data[f"{item}_最終"] = row["最終評分"]
+
+                new_df = pd.DataFrame([row_data])
+
+                # 【關鍵修改】: 支援手動建立的空白分頁
+                TARGET_SHEET = "Assessment_Data"
+
+                try:
+                    # 1. 嘗試讀取現有資料
+                    existing_data = conn.read(worksheet=TARGET_SHEET, ttl=0)
+                    # 2. 如果讀取成功，就合併 (Append)
+                    updated_df = pd.concat([existing_data, new_df], ignore_index=True)
+                except Exception:
+                    # 3. 如果讀取失敗 (例如分頁全白)，就直接把這筆當作第一筆資料
+                    # 不去執行 create (因為分頁已存在)，直接準備 update
+                    updated_df = new_df
+
+                # 4. 寫入資料 (使用 update，因為您的分頁和欄位都已經準備好了)
+                conn.update(worksheet=TARGET_SHEET, data=updated_df)
+                
+                st.success(f"✅ 成功！{name} 的資料已存入 '{TARGET_SHEET}' 分頁。")
+                st.balloons()
+
+if __name__ == "__main__":
+    main()
