@@ -4,7 +4,7 @@ from datetime import date
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 設定連線 ---
+# --- 設定連線範圍 ---
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -15,7 +15,7 @@ def connect_to_google_sheets():
     spreadsheet_name = "dental_assessment_data" 
     try:
         if "connections" not in st.secrets or "gsheets" not in st.secrets["connections"]:
-            st.error("❌ 找不到 Secrets 設定！")
+            st.error("❌ 找不到 Secrets 設定！請確認 .streamlit/secrets.toml 檔案。")
             st.stop()
 
         creds_dict = dict(st.secrets["connections"]["gsheets"])
@@ -41,7 +41,7 @@ def main():
     tab1, tab2 = st.tabs(["📝 員工/主管填寫", "🔍 後台查閱 (老闆專用)"])
 
     # ==========================================
-    # Tab 1: 填寫區 (原本的功能)
+    # Tab 1: 填寫區 (寫入資料)
     # ==========================================
     with tab1:
         st.subheader("新增考核紀錄")
@@ -66,7 +66,7 @@ def main():
 
         st.markdown("### 2. 考核評分")
         
-        # 定義資料結構
+        # 定義資料結構 (這也是之後寫入 Google Sheet 的順序依據)
         data_structure = [
             {"類別": "專業技能", "考核項目": "跟診技能", "說明": "器械準備熟練，無重大缺失。"},
             {"類別": "專業技能", "考核項目": "櫃台技能", "說明": "準確完成約診與行政作業。"},
@@ -85,10 +85,10 @@ def main():
         # 建立編輯表格
         if "df_input" not in st.session_state:
             df = pd.DataFrame(data_structure)
-            df["自評"] = 2
-            df["初考"] = 2
-            df["覆考"] = 2
-            df["最終"] = 2
+            df["自評"] = 0  # 預設為 0，避免產生文字格式
+            df["初考"] = 0
+            df["覆考"] = 0
+            df["最終"] = 0
             st.session_state.df_input = df
 
         column_config = {
@@ -122,11 +122,11 @@ def main():
         with mc2: manager_2 = st.text_input("覆考主管簽名")
 
         c1, c2, c3 = st.columns(3)
-        with c1: self_comment = st.text_area("自評文字")
+        with c1: self_comment = st.text_area("自評文字") # 修正名稱
         with c2: manager1_comment = st.text_area("初考評語")
         with c3: manager2_comment = st.text_area("覆考評語")
 
-        action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
+        action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"]) # 修正名稱
         
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -141,7 +141,7 @@ def main():
                         except:
                             worksheet = sh.add_worksheet(title="Assessment_Data", rows=100, cols=100)
 
-                        # 準備資料
+                        # 準備資料: 欄位名稱要與 Google Sheet 完全對應
                         row_data = [
                             name, rank, assess_date.strftime("%Y-%m-%d"),
                             manager_1, manager_2, boss_name,
@@ -151,16 +151,20 @@ def main():
                             pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
                         ]
                         
+                        # 這是我們修正後的正確標題順序
                         headers = ["姓名", "職等", "日期", "初考主管", "覆考主管", "核決老闆",
                                    "自評總分", "初考總分", "覆考總分", "最終總分",
                                    "自評文字", "初考評語", "覆考評語", "最終建議", "填寫時間"]
                         
+                        # 把細項分數依序加入
                         for _, row in edited_df.iterrows():
                             item = row["考核項目"]
                             if f"{item}_自評" not in headers:
                                 headers.extend([f"{item}_自評", f"{item}_初考", f"{item}_覆考", f"{item}_最終"])
+                            # 強制轉為 int 寫入，避免之後讀取變成文字
                             row_data.extend([int(row["自評"]), int(row["初考"]), int(row["覆考"]), int(row["最終"])])
 
+                        # 如果是新表，先寫入標題
                         if not worksheet.get_all_values():
                             worksheet.append_row(headers)
                         
@@ -171,14 +175,14 @@ def main():
                         st.error(f"錯誤: {e}")
 
     # ==========================================
-    # Tab 2: 後台查閱 (新功能)
+    # Tab 2: 後台查閱 (讀取資料)
     # ==========================================
     with tab2:
         st.header("🔍 考核紀錄查詢")
         
         # 簡易密碼鎖
         password = st.text_input("請輸入管理員密碼", type="password")
-        if password == "1234":  # 您可以改成喜歡的密碼
+        if password == "1234": 
             try:
                 worksheet = sh.worksheet("Assessment_Data")
                 data = worksheet.get_all_records()
@@ -190,7 +194,7 @@ def main():
                     
                     # 1. 搜尋選單
                     st.markdown("#### 1. 選擇要查看的考核單")
-                    # 建立一個選單顯示：姓名 | 日期 | 總分
+                    # 製作選單字串
                     options = [f"{row['姓名']} | {row['日期']} (最終分:{row['最終總分']})" for i, row in df_all.iterrows()]
                     selected_option = st.selectbox("請選擇人員", options)
                     
@@ -224,34 +228,38 @@ def main():
                     c1.text_area("初考評語", value=record['初考評語'], disabled=True)
                     c2.text_area("覆考評語", value=record['覆考評語'], disabled=True)
                     
-                    st.success(f"📌 最終建議：{record['最終建議']}")
+                    # 依據結果給予不同顏色的提示
+                    result_text = record['最終建議']
+                    if "通過" in str(result_text):
+                        st.success(f"📌 最終建議：{result_text}")
+                    else:
+                        st.warning(f"📌 最終建議：{result_text}")
 
-                    detail_df = pd.DataFrame(detail_rows)
-st.table(detail_df) # 使用靜態表格展示，比較像成績單
+                    # 3. 細項分數還原 (將扁平資料轉回表格)
+                    st.markdown("#### 📊 細項評分表")
                     
-                    # 重建表格結構
                     detail_rows = []
-                    # 這是原本表格裡的項目順序
+                    # 這是原本表格裡的項目順序，確保顯示順序正確
                     items = ["跟診技能", "櫃台技能", "跟診執行", "櫃台溝通", "勤務配合(職能)", "勤務配合(配合)", "人際協作(人際)", "人際協作(協作)", "危機處理", "基礎職能", "進階職能", "應變能力"]
                     
                     for item in items:
-                        # 嘗試從資料庫抓取對應分數，如果找不到(可能欄位名有變)就填 -
-                        try:
-                            detail_rows.append({
-                                "考核項目": item,
-                                "自評": record.get(f"{item}_自評", "-"),
-                                "初考": record.get(f"{item}_初考", "-"),
-                                "覆考": record.get(f"{item}_覆考", "-"),
-                                "最終": record.get(f"{item}_最終", "-"),
-                            })
-                        except:
-                            pass
+                        # 嘗試從資料庫抓取對應分數，避免因為 Google Sheet 改名而報錯
+                        detail_rows.append({
+                            "考核項目": item,
+                            "自評": record.get(f"{item}_自評", "-"),
+                            "初考": record.get(f"{item}_初考", "-"),
+                            "覆考": record.get(f"{item}_覆考", "-"),
+                            "最終": record.get(f"{item}_最終", "-"),
+                        })
                             
                     detail_df = pd.DataFrame(detail_rows)
-                    st.table(detail_df) # 使用靜態表格展示，比較像成績單
+                    
+                    # 【關鍵修改】使用 st.table 而不是 st.dataframe
+                    # st.table 會強制顯示純文字與數字，不會變成黑點點 (密碼模式)
+                    st.table(detail_df) 
 
             except Exception as e:
-                st.error(f"讀取失敗，請確認資料庫已有資料。錯誤: {e}")
+                st.error(f"讀取失敗，請確認資料庫已有資料。錯誤詳情: {e}")
         elif password:
             st.error("密碼錯誤！")
 
