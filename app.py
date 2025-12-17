@@ -155,12 +155,12 @@ def main():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- 6. 提交按鈕 (修正版：自動建立新分頁) ---
+    # # --- 6. 提交按鈕 (智慧型版本) ---
     if st.button("🚀 提交完整考核表", type="primary", use_container_width=True):
         if not name:
             st.error("請務必填寫姓名！")
         else:
-            with st.spinner("正在建立新資料庫並存檔..."):
+            with st.spinner("正在處理龐大的考核資料..."):
                 
                 # 準備資料
                 row_data = {
@@ -190,20 +190,26 @@ def main():
                     row_data[f"{item}_最終"] = row["最終評分"]
 
                 new_df = pd.DataFrame([row_data])
-
-                # 【關鍵設定】使用新分頁名稱，避開舊格式衝突
                 TARGET_SHEET = "Assessment_Data"
 
                 try:
+                    # 嘗試讀取現有資料
                     existing_data = conn.read(worksheet=TARGET_SHEET, ttl=0)
                     updated_df = pd.concat([existing_data, new_df], ignore_index=True)
+                    # 如果讀取成功，代表分頁存在，使用 update (但前提是欄位要夠寬，或透過下方 create 修復)
+                    conn.update(worksheet=TARGET_SHEET, data=updated_df)
+                    st.success(f"✅ 成功！資料已更新至 '{TARGET_SHEET}'。")
+                    
                 except Exception:
-                    # 如果分頁不存在，就直接用新資料 (會自動建立)
-                    updated_df = new_df
+                    # 【關鍵修復】: 如果讀取失敗 (分頁不存在)，或是 update 失敗 (欄位不夠)
+                    # 我們直接呼叫 create，它會自動依據資料寬度建立新分頁
+                    try:
+                        conn.create(worksheet=TARGET_SHEET, data=new_df)
+                        st.success(f"✅ 成功！已建立全新分頁 '{TARGET_SHEET}' 並存檔。")
+                    except Exception as e:
+                        st.error(f"寫入失敗，請檢查 Google 試算表權限或欄位數量。錯誤: {e}")
+                        st.stop()
 
-                conn.update(worksheet=TARGET_SHEET, data=updated_df)
-                
-                st.success(f"✅ 成功！{name} 的資料已存入 '{TARGET_SHEET}' 分頁。")
                 st.balloons()
 
 if __name__ == "__main__":
