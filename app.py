@@ -90,7 +90,7 @@ def main():
     with c1: name = st.text_input("姓名", placeholder="請輸入姓名")
     with c2: rank = st.text_input("職等", placeholder="請輸入職等")
     with c3: assess_date = st.date_input("評量日期", date.today())
-    with c4: boss_name = st.text_input("核決老闆", value="老闆")
+    with c4: boss_name = st.text_input("最高核決", value="請輸入姓名")
 
     st.markdown("---")
 
