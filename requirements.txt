@@ -1,1 +1,4 @@
-st-gsheets-connection
+streamlit
+pandas
+gspread
+google-auth
