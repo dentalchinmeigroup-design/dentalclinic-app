@@ -33,58 +33,44 @@ def connect_to_google_sheets():
         st.stop()
 
 # --- 2. 快取讀取資料 ---
-@st.cache_data(ttl=5) # 5秒快取，確保資料更新及時
+@st.cache_data(ttl=5)
 def load_data_from_sheet(_worksheet):
     return _worksheet.get_all_records()
 
-# --- 3. 核心功能：依據標題寫入資料 (含防呆) ---
+# --- 3. 核心功能：依據標題寫入資料 ---
 def save_data_using_headers(worksheet, data_dict):
-    """
-    聰明的寫入功能：會自動去除標題空白，確保對應正確。
-    """
-    # 1. 取得目前 Sheet 上所有的標題 (去除前後空白)
     raw_headers = worksheet.row_values(1)
     existing_headers = [h.strip() for h in raw_headers]
     
-    # 如果是空表，就建立標題
     if not existing_headers:
         existing_headers = list(data_dict.keys())
         worksheet.append_row(existing_headers)
         raw_headers = existing_headers
     
-    # 2. 檢查有沒有新欄位 (data_dict 有，但 Sheet 沒有的)
     new_cols = [k for k in data_dict.keys() if k not in existing_headers]
     if new_cols:
         worksheet.add_cols(len(new_cols))
         for i, col_name in enumerate(new_cols):
-            # 補在最後面
             worksheet.update_cell(1, len(raw_headers) + i + 1, col_name)
         existing_headers.extend(new_cols)
         
-    # 3. 依照標題順序，準備要寫入的一整列資料
     row_values = []
     for header in existing_headers:
-        # 這裡也要用 strip() 後的 key 來找資料
         val = data_dict.get(header, "")
         row_values.append(val)
         
-    # 4. 寫入
     worksheet.append_row(row_values)
 
-# --- 4. 輔助函數：動態計算總分 (解決顯示為 0 的問題) ---
+# --- 4. 輔助函數：動態計算總分 (升級版：支援小數點字串) ---
 def calculate_dynamic_score(record, suffix):
-    """
-    不管資料庫存什麼，直接現場加總細項分數，保證正確。
-    suffix: '-自評', '-初考', '-覆考', '-最終'
-    """
     items = get_assessment_items()
     total = 0
     for item in items:
         key = f"{item['考核項目']}{suffix}"
         val = record.get(key, 0)
-        # 確保轉成數字，如果是空字串則當作 0
         try:
-            total += int(val)
+            # 先轉 float 再轉 int，解決 "9.0" 轉 int 失敗的問題
+            total += int(float(val))
         except:
             total += 0
     return total
@@ -96,6 +82,16 @@ def find_row_index(all_values, name, assess_date):
     if match:
         return match[0] + 2 
     return None
+
+# --- 5. Session State 初始化 (用於重置輸入框) ---
+def init_session_state():
+    # 初始化各個分頁的計數器，用來強制重置輸入框
+    if "key_counter_self" not in st.session_state:
+        st.session_state.key_counter_self = 0
+    if "key_counter_primary" not in st.session_state:
+        st.session_state.key_counter_primary = 0
+    if "key_counter_sec" not in st.session_state:
+        st.session_state.key_counter_sec = 0
 
 def show_guidelines():
     with st.expander("📖 查看評分標準與職能定義說明", expanded=False):
@@ -139,6 +135,8 @@ def main():
     st.set_page_config(page_title="考核系統流程版", layout="wide")
     st.title("✨ 日沐 ‧ 勤美 ‧ 小日子 | 考核系統 (流程版)")
     
+    init_session_state() # 初始化計數器
+    
     sh = connect_to_google_sheets()
     try:
         worksheet = sh.worksheet("Assessment_Data")
@@ -164,24 +162,28 @@ def main():
         elif role == "初考主管 (管理者)": next_status = "待覆考"
         else: next_status = "待核決"
 
-        if "df_self" not in st.session_state:
+        # 使用計數器作為 Key 的一部分，當計數器增加時，DataFrame 會重置
+        df_key = f"df_self_{st.session_state.key_counter_self}"
+        if df_key not in st.session_state:
             df = pd.DataFrame(get_assessment_items())
             df["自評"] = 0
-            st.session_state.df_self = df
+            st.session_state[df_key] = df
 
         edited_df = st.data_editor(
-            st.session_state.df_self,
+            st.session_state[df_key],
             column_config={
                 "自評": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
                 "類別": st.column_config.TextColumn(disabled=True),
                 "考核項目": st.column_config.TextColumn(disabled=True),
                 "說明": st.column_config.TextColumn(disabled=True, width="large"),
             },
-            hide_index=True, use_container_width=True, key="editor_self_widget"
+            hide_index=True, use_container_width=True, 
+            key=f"editor_self_{st.session_state.key_counter_self}" # 動態 Key
         )
         
-        # 這裡綁定 session state key
-        self_comment = st.text_area("自評文字", placeholder="請輸入...", key="self_comment_key")
+        # 動態 Key，每次送出後都會換一個新的 Key，變回空字串
+        self_comment = st.text_area("自評文字", placeholder="請輸入...", 
+                                    key=f"comment_self_{st.session_state.key_counter_self}")
 
         if st.button("🚀 送出自評", type="primary"):
             if not name:
@@ -211,9 +213,8 @@ def main():
 
                     save_data_using_headers(worksheet, data_to_save)
 
-                    # --- 關鍵修正：清空輸入框 ---
-                    st.session_state["self_comment_key"] = ""  
-                    del st.session_state["df_self"] 
+                    # --- 關鍵修正：增加計數器，強制重置所有輸入框 ---
+                    st.session_state.key_counter_self += 1
 
                     st.success(f"✅ 自評已送出！案件已轉移至【{next_status}】列表。")
                     time.sleep(1)
@@ -232,9 +233,7 @@ def main():
             df_all = pd.DataFrame(data)
 
             if not df_all.empty and "目前狀態" in df_all.columns:
-                # 只保留還沒被刪除的（gspread 讀回來通常不會有問題，但做個保護）
                 pending_df = df_all[df_all["目前狀態"] == "待初考"]
-                
                 if pending_df.empty:
                     st.info("🎉 目前沒有待審核的初考案件。")
                 else:
@@ -248,7 +247,7 @@ def main():
                     st.markdown("---")
                     st.subheader(f"正在審核：{target_name}")
                     
-                    # --- 關鍵修正：使用動態計算，解決顯示為 0 的問題 ---
+                    # 顯示動態計算的分數
                     real_self_score = calculate_dynamic_score(record, '-自評')
                     st.write(f"**員工自評總分**：{real_self_score}")
                     st.info(f"🗨️ **員工自評內容**：{record.get('自評文字', '')}")
@@ -265,6 +264,7 @@ def main():
                         })
                     
                     df_primary = pd.DataFrame(input_data)
+                    # 這裡不需要動態Key重置，因為每次選不同人都會重新渲染
                     edited_primary = st.data_editor(
                         df_primary,
                         column_config={
@@ -273,11 +273,13 @@ def main():
                             "說明": st.column_config.TextColumn(disabled=True, width="medium"),
                             "考核項目": st.column_config.TextColumn(disabled=True),
                         },
-                        hide_index=True, use_container_width=True, key="editor_primary"
+                        hide_index=True, use_container_width=True, 
+                        key=f"editor_primary_{st.session_state.key_counter_primary}"
                     )
 
-                    # 綁定 Key
-                    manager_comment = st.text_area("初考評語", key="comment_primary_key")
+                    # 評語輸入框使用動態 Key，送出後會變空
+                    manager_comment = st.text_area("初考評語", 
+                                                   key=f"comment_primary_{st.session_state.key_counter_primary}")
                     
                     if st.button("✅ 提交初考", type="primary"):
                         with st.spinner("更新資料庫中..."):
@@ -285,12 +287,9 @@ def main():
                             row_idx = find_row_index(data, target_name, target_date)
                             if row_idx:
                                 headers = list(data[0].keys())
-                                # 去除標題空白，確保對應
                                 clean_headers = [h.strip() for h in headers]
                                 updates = []
-                                
                                 try:
-                                    # 找欄位 index (使用 clean_headers 找)
                                     status_col = clean_headers.index("目前狀態") + 1
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待覆考"]]})
                                     
@@ -309,15 +308,15 @@ def main():
                                     
                                     worksheet.batch_update(updates)
 
-                                    # --- 關鍵修正：清空輸入框 ---
-                                    st.session_state["comment_primary_key"] = ""
+                                    # --- 增加計數器，重置輸入框 ---
+                                    st.session_state.key_counter_primary += 1
                                     
                                     st.success("✅ 初考完成！")
                                     time.sleep(1)
                                     st.rerun()
 
                                 except ValueError as e:
-                                    st.error(f"欄位對應錯誤 (可能是 Sheet 標題被改過): {e}")
+                                    st.error(f"欄位對應錯誤: {e}")
 
     # ==========================================
     # Tab 3: 覆考主管審核
@@ -347,13 +346,12 @@ def main():
                     user_role = record.get('職務身份', '一般員工')
                     st.subheader(f"正在審核：{target_name} ({user_role})")
                     
-                    # --- 關鍵修正：動態計算顯示 ---
+                    # 顯示動態計算的分數
                     real_self_score = calculate_dynamic_score(record, '-自評')
                     real_primary_score = calculate_dynamic_score(record, '-初考')
                     
                     c1, c2 = st.columns(2)
                     c1.info(f"**自評總分**：{real_self_score}\n\n💬 {record.get('自評文字', '')}")
-                    
                     if real_primary_score > 0:
                         c2.warning(f"**初考總分**：{real_primary_score}\n\n💬 {record.get('初考評語', '')}")
                     else:
@@ -381,10 +379,13 @@ def main():
                             "說明": st.column_config.TextColumn(disabled=True, width="medium"),
                             "考核項目": st.column_config.TextColumn(disabled=True),
                         },
-                        hide_index=True, use_container_width=True, key="editor_sec"
+                        hide_index=True, use_container_width=True, 
+                        key=f"editor_sec_{st.session_state.key_counter_sec}"
                     )
 
-                    sec_comment = st.text_area("覆考評語", key="comment_sec_key")
+                    # 動態 Key
+                    sec_comment = st.text_area("覆考評語", 
+                                               key=f"comment_sec_{st.session_state.key_counter_sec}")
                     
                     if st.button("✅ 提交覆考", type="primary"):
                         with st.spinner("更新資料庫中..."):
@@ -414,8 +415,8 @@ def main():
                                     
                                     worksheet.batch_update(updates)
 
-                                    # --- 關鍵修正：清空輸入框 ---
-                                    st.session_state["comment_sec_key"] = ""
+                                    # --- 增加計數器，重置輸入框 ---
+                                    st.session_state.key_counter_sec += 1
 
                                     st.success("✅ 覆考完成！")
                                     time.sleep(1)
@@ -454,11 +455,10 @@ def main():
 
                     st.markdown("---")
                     
-                    # --- 關鍵修正：動態計算顯示 ---
                     real_self = calculate_dynamic_score(record, '-自評')
                     real_prim = calculate_dynamic_score(record, '-初考')
                     real_sec = calculate_dynamic_score(record, '-覆考')
-                    real_final = calculate_dynamic_score(record, '-最終') # 已完成才會有
+                    real_final = calculate_dynamic_score(record, '-最終')
 
                     col1, col2, col3, col4 = st.columns(4)
                     col1.metric("自評總分", real_self)
