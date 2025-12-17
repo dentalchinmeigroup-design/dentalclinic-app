@@ -11,6 +11,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+# --- 1. 連線設定 ---
 def connect_to_google_sheets():
     """連線到 Google Sheets"""
     spreadsheet_name = "dental_assessment_data" 
@@ -31,27 +32,40 @@ def connect_to_google_sheets():
         st.error(f"連線失敗: {e}")
         st.stop()
 
-# --- 輔助函數：尋找資料所在的列數 (Row Index) ---
-def find_row_index(worksheet, name, assess_date):
-    """根據姓名和日期，找出 Google Sheet 中的列數 (從 1 開始)"""
-    all_values = worksheet.get_all_values()
-    # 假設姓名在第 1 欄 (index 0)，日期在第 3 欄 (index 2)
-    # 請根據您的 Sheet 實際標題順序調整這裡的 index
-    headers = all_values[0]
-    try:
-        name_idx = headers.index("姓名")
-        date_idx = headers.index("日期")
-    except:
-        return None
+# --- 2. 快取讀取資料 (關鍵修正：防止 API 爆量) ---
+@st.cache_data(ttl=10) # 設定資料在快取存活 10 秒，避免頻繁讀取
+def load_data_from_sheet(_worksheet):
+    """從 Google Sheet 讀取所有資料 (有快取保護)"""
+    return _worksheet.get_all_records()
 
-    for i, row in enumerate(all_values):
-        if i == 0: continue # 跳過標題
-        # 比對姓名和日期 (日期轉字串比對)
-        if row[name_idx] == name and row[date_idx] == str(assess_date):
-            return i + 1 # Google Sheet 行數從 1 開始
+# --- 3. 輔助函數 ---
+def find_row_index(all_values, name, assess_date):
+    """根據已經讀下來的資料找出列數"""
+    if not all_values: return None
+    headers = list(all_values[0].keys()) # 取得標題
+    
+    # 轉換成 DataFrame 比較好找
+    df = pd.DataFrame(all_values)
+    
+    # 尋找對應的 row index (注意：Google Sheet 是從 1 開始，且第一列是標題，所以要小心換算)
+    # 我們這邊回傳的是 "DataFrame 的 index"，之後要 +2 (因為 0-base + 1標題列 + 1開始數)
+    match = df.index[(df["姓名"] == name) & (df["日期"] == str(assess_date))].tolist()
+    
+    if match:
+        return match[0] + 2 # 回傳 Google Sheet 的實際 Row Number
     return None
 
-# --- 輔助函數：定義評分細項 ---
+def show_scoring_guide():
+    """顯示評分標準 (可重複呼叫)"""
+    with st.expander("📖 查看評分標準 (0-10分定義)", expanded=False):
+        st.markdown("""
+        * **10分 (表現卓越)**：超越預期，能主動優化流程或指導他人。
+        * **8-9分 (完全符合)**：完全達到標準，無須督導即可完成。
+        * **5-7分 (部分符合)**：大致達到標準，偶爾需要提醒或修正。
+        * **3-4分 (不符合)**：經常發生錯誤，需要密切督導。
+        * **0-2分 (多次不符合)**：經指導後仍未改善，嚴重影響運作。
+        """)
+
 def get_assessment_items():
     return [
         {"類別": "專業技能", "考核項目": "跟診技能", "說明": "器械準備熟練，無重大缺失。"},
@@ -87,28 +101,24 @@ def main():
     with tabs[0]:
         st.header("📝 員工自評區")
         st.info("填寫完畢後，資料將自動送往下一關主管。")
+        
+        # 顯示評分標準
+        show_scoring_guide()
 
         col1, col2, col3 = st.columns(3)
         with col1: name = st.text_input("姓名", placeholder="請輸入您的姓名")
         with col2: 
-            # 關鍵邏輯：選擇身份決定下一關去哪
             role = st.selectbox("您的職務身份", ["一般員工", "初考主管 (管理者)", "覆考主管 (護理長)"])
         with col3: assess_date = st.date_input("評量日期", date.today())
 
-        # 根據身份決定初始狀態
         if role == "一般員工":
             next_status = "待初考"
-            next_step_hint = "提交後將傳送給：初考主管"
         elif role == "初考主管 (管理者)":
             next_status = "待覆考"
-            next_step_hint = "提交後將傳送給：覆考主管 (您跳過了初考階段)"
-        else: # 護理長
+        else: 
             next_status = "待核決"
-            next_step_hint = "提交後將傳送給：老闆 (您跳過了初覆考階段)"
 
-        st.caption(f"ℹ️ {next_step_hint}")
-
-        # 建立評分表 (只開放自評欄位)
+        # 建立評分表 (包含說明欄位)
         if "df_self" not in st.session_state:
             df = pd.DataFrame(get_assessment_items())
             df["自評"] = 0
@@ -120,7 +130,8 @@ def main():
                 "自評": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
                 "類別": st.column_config.TextColumn(disabled=True),
                 "考核項目": st.column_config.TextColumn(disabled=True),
-                "說明": st.column_config.TextColumn(disabled=True),
+                # 這裡會顯示詳細說明，並且設為不可編輯
+                "說明": st.column_config.TextColumn(disabled=True, width="large"),
             },
             hide_index=True,
             use_container_width=True,
@@ -134,13 +145,13 @@ def main():
                 st.error("請填寫姓名")
             else:
                 with st.spinner("資料傳送中..."):
-                    # 準備標題 (確保包含目前狀態)
+                    # 清除快取，確保下次讀到最新資料
+                    load_data_from_sheet.clear()
+                    
                     headers = ["目前狀態", "姓名", "職務身份", "日期", 
                                "自評總分", "初考總分", "覆考總分", "最終總分",
                                "自評文字", "初考評語", "覆考評語", "最終建議", "填寫時間"]
                     
-                    # 準備資料 row
-                    # 預設其他分數為 0，避免空值
                     row_data = [
                         next_status, name, role, assess_date.strftime("%Y-%m-%d"),
                         int(edited_df["自評"].sum()), 0, 0, 0,
@@ -148,21 +159,16 @@ def main():
                         pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
                     ]
 
-                    # 處理細項分數 (全部扁平化)
                     for _, row in edited_df.iterrows():
                         item = row["考核項目"]
-                        # 檢查標題是否存在
                         if f"{item}-自評" not in headers:
                             headers.extend([f"{item}-自評", f"{item}-初考", f"{item}-覆考", f"{item}-最終"])
-                        # 填入自評分數，其他預設 0
                         row_data.extend([int(row["自評"]), 0, 0, 0])
 
-                    # 寫入 Sheet
                     all_values = worksheet.get_all_values()
                     if not all_values:
                         worksheet.append_row(headers)
                     elif all_values[0] != headers:
-                        # 簡單防呆：如果標題變了，這裡只做簡單處理，實務上建議固定標題
                         pass 
 
                     worksheet.append_row(row_data)
@@ -175,29 +181,31 @@ def main():
     # ==========================================
     with tabs[1]:
         st.header("👮‍♂️ 初考主管審核區")
+        
+        # 顯示評分標準
+        show_scoring_guide()
+        
         pwd1 = st.text_input("🔒 初考主管密碼", type="password", key="pwd_primary")
         
-        if pwd1 == "1111": # 預設密碼
-            # 1. 從 Sheet 撈出所有資料
-            data = worksheet.get_all_records()
+        if pwd1 == "1111": 
+            # 使用快取讀取資料，避免 API 錯誤
+            data = load_data_from_sheet(worksheet)
             df_all = pd.DataFrame(data)
 
             if not df_all.empty and "目前狀態" in df_all.columns:
-                # 2. 篩選：只顯示「待初考」的單子
                 pending_df = df_all[df_all["目前狀態"] == "待初考"]
 
                 if pending_df.empty:
                     st.info("🎉 目前沒有待審核的初考案件。")
                 else:
                     st.write(f"待審核案件：{len(pending_df)} 筆")
-                    
-                    # 選擇要審核的人
                     target_options = [f"{row['姓名']} ({row['日期']})" for i, row in pending_df.iterrows()]
                     selected_target = st.selectbox("請選擇審核對象", target_options, key="sel_primary")
                     
-                    # 找出該筆資料
                     target_name = selected_target.split(" (")[0]
                     target_date = selected_target.split(" (")[1].replace(")", "")
+                    
+                    # 抓出該筆資料
                     record = pending_df[(pending_df["姓名"] == target_name) & (pending_df["日期"] == target_date)].iloc[0]
 
                     st.markdown("---")
@@ -205,16 +213,17 @@ def main():
                     st.write(f"**員工自評總分**：{record['自評總分']}")
                     st.info(f"🗨️ **員工自評內容**：{record['自評文字']}")
 
-                    # 3. 建立評分表 (讀取自評，填寫初考)
+                    # 建立評分表
                     items = get_assessment_items()
                     input_data = []
                     for item in items:
                         i_name = item["考核項目"]
                         input_data.append({
                             "考核項目": i_name,
+                            # 讓主管看到說明
                             "說明": item["說明"],
                             "自評 (參考)": record.get(f"{i_name}-自評", 0),
-                            "初考評分": 0 # 預設
+                            "初考評分": 0 
                         })
                     
                     df_primary = pd.DataFrame(input_data)
@@ -223,7 +232,8 @@ def main():
                         column_config={
                             "自評 (參考)": st.column_config.NumberColumn(disabled=True),
                             "初考評分": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
-                            "說明": st.column_config.TextColumn(disabled=True),
+                            "說明": st.column_config.TextColumn(disabled=True, width="medium"),
+                            "考核項目": st.column_config.TextColumn(disabled=True),
                         },
                         hide_index=True,
                         use_container_width=True,
@@ -234,35 +244,31 @@ def main():
                     
                     if st.button("✅ 提交初考 (傳送給覆考主管)", type="primary"):
                         with st.spinner("更新資料庫中..."):
-                            # 1. 找出這筆資料在 Sheet 的第幾列
-                            row_idx = find_row_index(worksheet, target_name, target_date)
+                            load_data_from_sheet.clear() # 清除快取
+                            
+                            row_idx = find_row_index(data, target_name, target_date)
                             
                             if row_idx:
-                                headers = worksheet.row_values(1)
+                                headers = list(data[0].keys()) # 從快取資料拿標題
                                 updates = []
 
-                                # 更新狀態 -> 待覆考
                                 try:
                                     status_col = headers.index("目前狀態") + 1
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待覆考"]]})
                                     
-                                    # 更新初考總分
                                     score_sum_col = headers.index("初考總分") + 1
                                     total_score = int(edited_primary["初考評分"].sum())
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
 
-                                    # 更新初考評語
                                     comment_col = headers.index("初考評語") + 1
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, comment_col), "values": [[manager_comment]]})
 
-                                    # 更新細項分數
                                     for _, r in edited_primary.iterrows():
                                         col_name = f"{r['考核項目']}-初考"
                                         if col_name in headers:
                                             col_idx = headers.index(col_name) + 1
                                             updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[int(r['初考評分'])]]})
                                     
-                                    # 執行批次更新
                                     worksheet.batch_update(updates)
                                     st.success("✅ 初考完成！案件已移交給覆考主管。")
                                     time.sleep(2)
@@ -270,22 +276,23 @@ def main():
 
                                 except ValueError as e:
                                     st.error(f"欄位對應錯誤，請檢查 Sheet 標題。{e}")
-                            else:
-                                st.error("❌ 找不到原始資料列，請聯繫管理員。")
 
     # ==========================================
     # Tab 3: 覆考主管審核
     # ==========================================
     with tabs[2]:
         st.header("👩‍⚕️ 覆考主管 (護理長) 審核區")
+        
+        # 顯示評分標準
+        show_scoring_guide()
+
         pwd2 = st.text_input("🔒 覆考主管密碼", type="password", key="pwd_secondary")
 
-        if pwd2 == "2222": # 預設密碼
-            data = worksheet.get_all_records()
+        if pwd2 == "2222": 
+            data = load_data_from_sheet(worksheet)
             df_all = pd.DataFrame(data)
 
             if not df_all.empty and "目前狀態" in df_all.columns:
-                # 篩選：只顯示「待覆考」的單子
                 pending_df = df_all[df_all["目前狀態"] == "待覆考"]
 
                 if pending_df.empty:
@@ -302,24 +309,23 @@ def main():
                     st.markdown("---")
                     st.subheader(f"正在審核：{target_name} ({record['職務身份']})")
                     
-                    # 顯示前兩關的資訊
                     c1, c2 = st.columns(2)
                     c1.info(f"**自評總分**：{record['自評總分']}\n\n💬 {record['自評文字']}")
-                    if record['初考總分'] > 0: # 如果有經過初考
+                    if record['初考總分'] > 0: 
                         c2.warning(f"**初考總分**：{record['初考總分']}\n\n💬 {record['初考評語']}")
                     else:
                         c2.warning("*(此案件由主管直接發起，無初考紀錄)*")
 
-                    # 建立評分表
                     items = get_assessment_items()
                     input_data = []
                     for item in items:
                         i_name = item["考核項目"]
                         input_data.append({
                             "考核項目": i_name,
+                            "說明": item["說明"], # 顯示說明
                             "自評": record.get(f"{i_name}-自評", 0),
                             "初考": record.get(f"{i_name}-初考", 0),
-                            "覆考評分": 0 # 預設
+                            "覆考評分": 0
                         })
                     
                     df_sec = pd.DataFrame(input_data)
@@ -329,6 +335,8 @@ def main():
                             "自評": st.column_config.NumberColumn(disabled=True),
                             "初考": st.column_config.NumberColumn(disabled=True),
                             "覆考評分": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
+                            "說明": st.column_config.TextColumn(disabled=True, width="medium"),
+                            "考核項目": st.column_config.TextColumn(disabled=True),
                         },
                         hide_index=True,
                         use_container_width=True,
@@ -339,12 +347,13 @@ def main():
                     
                     if st.button("✅ 提交覆考 (傳送給老闆)", type="primary"):
                         with st.spinner("更新資料庫中..."):
-                            row_idx = find_row_index(worksheet, target_name, target_date)
+                            load_data_from_sheet.clear() # 清除快取
+                            
+                            row_idx = find_row_index(data, target_name, target_date)
                             if row_idx:
-                                headers = worksheet.row_values(1)
+                                headers = list(data[0].keys())
                                 updates = []
                                 
-                                # 更新狀態 -> 待核決
                                 status_col = headers.index("目前狀態") + 1
                                 updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待核決"]]})
                                 
@@ -373,11 +382,10 @@ def main():
         st.header("🏆 老闆核決區")
         pwd3 = st.text_input("🔒 老闆密碼", type="password", key="pwd_boss")
 
-        if pwd3 == "8888": # 預設密碼
-            data = worksheet.get_all_records()
+        if pwd3 == "8888": 
+            data = load_data_from_sheet(worksheet)
             df_all = pd.DataFrame(data)
 
-            # 這裡我們只顯示「待核決」的，但也提供一個選項看「已完成」的
             view_mode = st.radio("檢視模式", ["待核決案件", "歷史已完成案件"], horizontal=True)
 
             if not df_all.empty and "目前狀態" in df_all.columns:
@@ -398,7 +406,6 @@ def main():
 
                     st.markdown("---")
                     
-                    # 顯示總覽
                     col1, col2, col3, col4 = st.columns(4)
                     col1.metric("自評總分", record['自評總分'])
                     col2.metric("初考總分", record['初考總分'])
@@ -408,7 +415,6 @@ def main():
                         col4.metric("🏆 最終總分", record['最終總分'])
                         st.success(f"📌 最終建議：{record['最終建議']}")
                         
-                        # 顯示詳細成績單 (Static Table)
                         st.markdown("### 詳細成績單")
                         items = get_assessment_items()
                         detail_rows = []
@@ -423,20 +429,20 @@ def main():
                             })
                         st.table(pd.DataFrame(detail_rows))
 
-                    else: # 待核決模式
+                    else: 
                         st.warning("請填寫最終成績以完成考核。")
                         
-                        # 建立評分表
                         items = get_assessment_items()
                         input_data = []
                         for item in items:
                             i_name = item["考核項目"]
                             input_data.append({
                                 "考核項目": i_name,
+                                "說明": item["說明"],
                                 "自評": record.get(f"{i_name}-自評", 0),
                                 "初考": record.get(f"{i_name}-初考", 0),
                                 "覆考": record.get(f"{i_name}-覆考", 0),
-                                "最終評分": 0 # 預設
+                                "最終評分": 0 
                             })
                         
                         df_boss = pd.DataFrame(input_data)
@@ -447,6 +453,8 @@ def main():
                                 "初考": st.column_config.NumberColumn(disabled=True),
                                 "覆考": st.column_config.NumberColumn(disabled=True),
                                 "最終評分": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
+                                "說明": st.column_config.TextColumn(disabled=True, width="medium"),
+                                "考核項目": st.column_config.TextColumn(disabled=True),
                             },
                             hide_index=True,
                             use_container_width=True,
@@ -457,12 +465,13 @@ def main():
                         
                         if st.button("🏆 核決並歸檔", type="primary"):
                             with st.spinner("正在歸檔..."):
-                                row_idx = find_row_index(worksheet, target_name, target_date)
+                                load_data_from_sheet.clear() # 清除快取
+
+                                row_idx = find_row_index(data, target_name, target_date)
                                 if row_idx:
-                                    headers = worksheet.row_values(1)
+                                    headers = list(data[0].keys())
                                     updates = []
                                     
-                                    # 更新狀態 -> 已完成
                                     status_col = headers.index("目前狀態") + 1
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["已完成"]]})
                                     
