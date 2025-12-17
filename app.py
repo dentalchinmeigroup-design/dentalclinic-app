@@ -32,25 +32,22 @@ def connect_to_google_sheets():
         st.error(f"連線失敗: {e}")
         st.stop()
 
-# --- 2. [關鍵修正] 安全讀取與寫入 (自動重試機制) ---
+# --- 2. 安全讀取與寫入 (自動重試機制) ---
 def safe_read_data(worksheet):
-    """嘗試讀取資料，如果失敗就等待並重試 (最多3次)"""
     for i in range(3):
         try:
             return worksheet.get_all_records()
         except Exception as e:
-            time.sleep(1.5) # 等待 1.5 秒
-            if i == 2: # 最後一次還是失敗，才拋出錯誤
+            time.sleep(1.5)
+            if i == 2:
                 st.error(f"連線繁忙，請稍後再試。({e})")
                 st.stop()
 
 @st.cache_data(ttl=5)
 def load_data_from_sheet(_worksheet):
-    # 使用包裝好的安全讀取
     return safe_read_data(_worksheet)
 
 def safe_batch_update(worksheet, updates):
-    """嘗試寫入資料，如果失敗就等待並重試"""
     for i in range(3):
         try:
             worksheet.batch_update(updates)
@@ -62,7 +59,6 @@ def safe_batch_update(worksheet, updates):
 
 # --- 3. 核心功能：依據標題寫入資料 ---
 def save_data_using_headers(worksheet, data_dict):
-    # 這裡也加入簡單的重試
     for attempt in range(3):
         try:
             raw_headers = worksheet.row_values(1)
@@ -86,21 +82,39 @@ def save_data_using_headers(worksheet, data_dict):
                 row_values.append(val)
                 
             worksheet.append_row(row_values)
-            return # 成功就跳出
+            return 
         except Exception:
             time.sleep(1.5)
 
-# --- 4. 輔助函數：動態計算總分 ---
+# --- 4. [關鍵修正] 智慧分數計算 (處理 N/A) ---
 def calculate_dynamic_score(record, suffix):
+    """從資料庫讀取時計算總分，忽略 N/A"""
     items = get_assessment_items()
     total = 0
     for item in items:
         key = f"{item['考核項目']}{suffix}"
         val = record.get(key, 0)
+        
+        # 如果是 N/A 或文字，跳過不計分
+        if str(val) == "N/A":
+            continue
+            
         try:
             total += int(float(val))
         except:
             total += 0
+    return total
+
+def safe_sum_scores(series):
+    """在前端 DataFrame 計算總分時使用，忽略 N/A"""
+    total = 0
+    for val in series:
+        if str(val) == "N/A":
+            continue
+        try:
+            total += int(float(val))
+        except:
+            pass
     return total
 
 def find_row_index(all_values, name, assess_date):
@@ -130,6 +144,7 @@ def show_guidelines():
             * **5-7分 (部分符合)**：部分符合，但有建議改善事項。
             * **3-4分 (不符合)**：不符合，首次列入改善追蹤。
             * **0-2分 (多次不符合)**：多次不符合，需持續改善追蹤。
+            * **N/A (不適用)**：此項目不列入考核。
             """)
         with tab_b:
             st.markdown("""
@@ -157,6 +172,9 @@ def get_assessment_items():
         {"類別": "行政職能", "考核項目": "進階職能", "說明": "理解要求，效率完成任務。"},
         {"類別": "行政職能", "考核項目": "應變能力", "說明": "因應臨時需求，態度靈活。"},
     ]
+
+# --- 6. 定義評分選項 (包含 N/A) ---
+SCORE_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "N/A"]
 
 def main():
     st.set_page_config(page_title="考核系統流程版", layout="wide")
@@ -198,7 +216,8 @@ def main():
         edited_df = st.data_editor(
             st.session_state[df_key],
             column_config={
-                "自評": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
+                # 改為 SelectboxColumn 以支援 N/A
+                "自評": st.column_config.SelectboxColumn("自評", options=SCORE_OPTIONS, required=True),
                 "類別": st.column_config.TextColumn(disabled=True),
                 "考核項目": st.column_config.TextColumn(disabled=True),
                 "說明": st.column_config.TextColumn(disabled=True, width="large"),
@@ -217,12 +236,15 @@ def main():
                 with st.spinner("資料傳送中..."):
                     load_data_from_sheet.clear()
                     
+                    # 計算總分 (使用 safe_sum_scores 處理 N/A)
+                    total_score = safe_sum_scores(edited_df["自評"])
+
                     data_to_save = {
                         "目前狀態": next_status,
                         "姓名": name,
                         "職務身份": role,
                         "日期": assess_date.strftime("%Y-%m-%d"),
-                        "自評總分": int(edited_df["自評"].sum()),
+                        "自評總分": total_score,
                         "初考總分": 0, "覆考總分": 0, "最終總分": 0,
                         "自評文字": self_comment,
                         "初考評語": "", "覆考評語": "", "最終建議": "",
@@ -231,7 +253,7 @@ def main():
 
                     for _, row in edited_df.iterrows():
                         item = row["考核項目"]
-                        data_to_save[f"{item}-自評"] = int(row["自評"])
+                        data_to_save[f"{item}-自評"] = row["自評"] # 存入原始值 (可能含 N/A)
                         data_to_save[f"{item}-初考"] = 0
                         data_to_save[f"{item}-覆考"] = 0
                         data_to_save[f"{item}-最終"] = 0
@@ -288,8 +310,8 @@ def main():
                     edited_primary = st.data_editor(
                         df_primary,
                         column_config={
-                            "自評 (參考)": st.column_config.NumberColumn(disabled=True),
-                            "初考評分": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
+                            "自評 (參考)": st.column_config.TextColumn(disabled=True), # 改 Text 才能顯示 N/A
+                            "初考評分": st.column_config.SelectboxColumn("初考評分", options=SCORE_OPTIONS, required=True),
                             "說明": st.column_config.TextColumn(disabled=True, width="medium"),
                             "考核項目": st.column_config.TextColumn(disabled=True),
                         },
@@ -312,8 +334,8 @@ def main():
                                     status_col = clean_headers.index("目前狀態") + 1
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待覆考"]]})
                                     
+                                    total_score = safe_sum_scores(edited_primary["初考評分"])
                                     score_sum_col = clean_headers.index("初考總分") + 1
-                                    total_score = int(edited_primary["初考評分"].sum())
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
 
                                     comment_col = clean_headers.index("初考評語") + 1
@@ -323,11 +345,9 @@ def main():
                                         col_name = f"{r['考核項目']}-初考"
                                         if col_name in clean_headers:
                                             col_idx = clean_headers.index(col_name) + 1
-                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[int(r['初考評分'])]]})
+                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[r['初考評分']]]})
                                     
-                                    # 使用安全寫入
                                     safe_batch_update(worksheet, updates)
-                                    
                                     st.session_state.key_counter_primary += 1
                                     st.success("✅ 初考完成！")
                                     time.sleep(1)
@@ -389,9 +409,9 @@ def main():
                     edited_sec = st.data_editor(
                         df_sec,
                         column_config={
-                            "自評": st.column_config.NumberColumn(disabled=True),
-                            "初考": st.column_config.NumberColumn(disabled=True),
-                            "覆考評分": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
+                            "自評": st.column_config.TextColumn(disabled=True),
+                            "初考": st.column_config.TextColumn(disabled=True),
+                            "覆考評分": st.column_config.SelectboxColumn("覆考評分", options=SCORE_OPTIONS, required=True),
                             "說明": st.column_config.TextColumn(disabled=True, width="medium"),
                             "考核項目": st.column_config.TextColumn(disabled=True),
                         },
@@ -415,8 +435,8 @@ def main():
                                     status_col = clean_headers.index("目前狀態") + 1
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待核決"]]})
                                     
+                                    total_score = safe_sum_scores(edited_sec["覆考評分"])
                                     score_sum_col = clean_headers.index("覆考總分") + 1
-                                    total_score = int(edited_sec["覆考評分"].sum())
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
 
                                     comment_col = clean_headers.index("覆考評語") + 1
@@ -426,7 +446,7 @@ def main():
                                         col_name = f"{r['考核項目']}-覆考"
                                         if col_name in clean_headers:
                                             col_idx = clean_headers.index(col_name) + 1
-                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[int(r['覆考評分'])]]})
+                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[r['覆考評分']]]})
                                     
                                     safe_batch_update(worksheet, updates)
                                     st.session_state.key_counter_sec += 1
@@ -526,10 +546,10 @@ def main():
                         edited_boss = st.data_editor(
                             df_boss,
                             column_config={
-                                "自評": st.column_config.NumberColumn(disabled=True),
-                                "初考": st.column_config.NumberColumn(disabled=True),
-                                "覆考": st.column_config.NumberColumn(disabled=True),
-                                "最終評分": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
+                                "自評": st.column_config.TextColumn(disabled=True),
+                                "初考": st.column_config.TextColumn(disabled=True),
+                                "覆考": st.column_config.TextColumn(disabled=True),
+                                "最終評分": st.column_config.SelectboxColumn("最終評分", options=SCORE_OPTIONS, required=True),
                                 "說明": st.column_config.TextColumn(disabled=True, width="medium"),
                                 "考核項目": st.column_config.TextColumn(disabled=True),
                             },
@@ -540,7 +560,6 @@ def main():
                         with c1:
                             final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
                         with c2:
-                            # --- 2. 新增考績下拉選單 ---
                             final_grade = st.selectbox("🏅 最終考績", ["S", "A+", "A", "A-", "B"])
                         
                         if st.button("🏆 核決並歸檔", type="primary"):
@@ -562,8 +581,8 @@ def main():
                                         status_col = clean_headers.index("目前狀態") + 1
                                         updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["已完成"]]})
                                         
+                                        total_score = safe_sum_scores(edited_boss["最終評分"])
                                         score_sum_col = clean_headers.index("最終總分") + 1
-                                        total_score = int(edited_boss["最終評分"].sum())
                                         updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
 
                                         suggest_col = clean_headers.index("最終建議") + 1
@@ -576,9 +595,8 @@ def main():
                                             col_name = f"{r['考核項目']}-最終"
                                             if col_name in clean_headers:
                                                 col_idx = clean_headers.index(col_name) + 1
-                                                updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[int(r['最終評分'])]]})
+                                                updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[r['最終評分']]]})
                                         
-                                        # 安全寫入
                                         safe_batch_update(worksheet, updates)
                                         st.balloons()
                                         st.success("🎉 考核流程圓滿結束！")
