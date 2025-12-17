@@ -105,21 +105,23 @@ def normalize_date(date_str):
         d = pd.to_datetime(str(date_str))
         return d.strftime("%Y-%m-%d")
     except:
-        return str(date_str)
+        return str(date_str).strip()
 
 def find_row_index(all_values, name, assess_date):
-    if not all_values: return None
+    if not all_values: return None, None
     df = pd.DataFrame(all_values)
     
     target_date = normalize_date(assess_date)
+    # 強制轉字串並去空白
     df["normalized_date"] = df["日期"].apply(normalize_date)
     df["clean_name"] = df["姓名"].astype(str).str.strip()
     target_name = name.strip()
     
     match = df.index[(df["clean_name"] == target_name) & (df["normalized_date"] == target_date)].tolist()
+    
     if match:
-        return match[0] + 2 
-    return None
+        return match[0] + 2, df # 回傳 index 和 debug 用的 dataframe
+    return None, df
 
 # --- 5. Session State ---
 def init_session_state():
@@ -173,8 +175,12 @@ def get_assessment_items():
 
 SCORE_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "N/A"]
 
-# --- 6. 新的 UI 渲染函數 (已修復 Pandas 錯誤) ---
-def render_assessment_ui(prefix, key_suffix, record=None, readonly_stages=None):
+# --- 6. 新的 UI 渲染函數：使用 st.form 避免跳動 ---
+def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=None):
+    """
+    這個函數只負責產生「表單內部的內容」，不包含 submit button。
+    Submit button 必須由呼叫端在 st.form 區塊內產生。
+    """
     items = get_assessment_items()
     user_scores = {}
     
@@ -187,7 +193,6 @@ def render_assessment_ui(prefix, key_suffix, record=None, readonly_stages=None):
                 st.markdown(f"**{idx+1}. {item['考核項目']}**")
                 st.caption(f"說明：{item['說明']}")
                 
-                # 【關鍵修正】這裡明確檢查 record 是否為 None，解決 Pandas 錯誤
                 if record is not None and readonly_stages:
                     history_text = []
                     for suffix in readonly_stages:
@@ -200,6 +205,7 @@ def render_assessment_ui(prefix, key_suffix, record=None, readonly_stages=None):
                         st.markdown(" | ".join(history_text))
 
             with c2:
+                # Key 加上了 key_suffix，送出後 counter+1，這裡就會重置
                 score = st.selectbox(
                     f"評分 ({item['考核項目']})", 
                     options=SCORE_OPTIONS,
@@ -242,31 +248,32 @@ def main():
         st.header("📝 員工自評區")
         show_guidelines()
 
-        col1, col2, col3 = st.columns(3)
-        with col1: 
-            name = st.text_input("姓名", placeholder="請輸入姓名", 
-                                 key=f"name_self_{st.session_state.key_counter_self}")
-        with col2: 
-            role = st.selectbox("您的職務身份", ["一般員工", "初考主管 (管理者)", "覆考主管 (護理長)"],
-                                key=f"role_self_{st.session_state.key_counter_self}")
-        with col3: 
-            assess_date = st.date_input("評量日期", date.today(),
-                                        key=f"date_self_{st.session_state.key_counter_self}")
+        # 使用 form 包裹所有輸入，防止每填一格就跳動
+        with st.form(key=f"form_self_{st.session_state.key_counter_self}"):
+            col1, col2, col3 = st.columns(3)
+            with col1: 
+                name = st.text_input("姓名", placeholder="請輸入姓名")
+            with col2: 
+                role = st.selectbox("您的職務身份", ["一般員工", "初考主管 (管理者)", "覆考主管 (護理長)"])
+            with col3: 
+                assess_date = st.date_input("評量日期", date.today())
 
-        if role == "一般員工": next_status = "待初考"
-        elif role == "初考主管 (管理者)": next_status = "待覆考"
-        else: next_status = "待核決"
+            # 呼叫渲染函數，產生題目
+            user_scores = render_assessment_in_form("self", st.session_state.key_counter_self)
+            
+            self_comment = st.text_area("自評文字", placeholder="請輸入...")
 
-        # 員工自評不需要傳 record 和 stages
-        user_scores = render_assessment_ui("self", st.session_state.key_counter_self)
-        
-        self_comment = st.text_area("自評文字", placeholder="請輸入...", 
-                                    key=f"comment_self_{st.session_state.key_counter_self}")
+            # 提交按鈕必須在 form 內
+            submitted = st.form_submit_button("🚀 送出自評", type="primary")
 
-        if st.button("🚀 送出自評", type="primary"):
+        if submitted:
             if not name:
                 st.error("請填寫姓名")
             else:
+                if role == "一般員工": next_status = "待初考"
+                elif role == "初考主管 (管理者)": next_status = "待覆考"
+                else: next_status = "待核決"
+
                 with st.spinner("資料傳送中..."):
                     load_data_from_sheet.clear()
                     total_score = safe_sum_scores_from_dict(user_scores)
@@ -290,6 +297,8 @@ def main():
                         data_to_save[f"{item_name}-最終"] = 0
 
                     save_data_using_headers(worksheet, data_to_save)
+                    
+                    # 送出成功後，計數器 +1，強迫下次重新渲染表單 (清空)
                     st.session_state.key_counter_self += 1
                     st.success(f"✅ 自評已送出！案件已轉移至【{next_status}】列表。")
                     time.sleep(1)
@@ -326,21 +335,25 @@ def main():
                     st.write(f"**員工自評總分**：{real_self_score}")
                     st.info(f"🗨️ **員工自評內容**：{record.get('自評文字', '')}")
 
-                    # 這裡會正常運作了，因為 record 不是 None
-                    manager_scores = render_assessment_ui(
-                        "primary", 
-                        st.session_state.key_counter_primary,
-                        record=record,
-                        readonly_stages=["-自評"] 
-                    )
+                    # --- 表單開始 ---
+                    with st.form(key=f"form_primary_{st.session_state.key_counter_primary}"):
+                        
+                        manager_scores = render_assessment_in_form(
+                            "primary", 
+                            st.session_state.key_counter_primary,
+                            record=record,
+                            readonly_stages=["-自評"] 
+                        )
 
-                    manager_comment = st.text_area("初考評語", 
-                                                   key=f"comment_primary_{st.session_state.key_counter_primary}")
+                        manager_comment = st.text_area("初考評語")
+                        
+                        submitted_primary = st.form_submit_button("✅ 提交初考", type="primary")
                     
-                    if st.button("✅ 提交初考", type="primary"):
+                    if submitted_primary:
                         with st.spinner("更新資料庫中..."):
                             load_data_from_sheet.clear()
-                            row_idx = find_row_index(data, target_name, target_date)
+                            # 嘗試尋找資料列，並回傳 debug 用的 df
+                            row_idx, debug_df = find_row_index(data, target_name, target_date)
                             
                             if row_idx:
                                 headers = list(data[0].keys())
@@ -371,7 +384,10 @@ def main():
                                 except ValueError as e:
                                     st.error(f"欄位對應錯誤: {e}")
                             else:
-                                st.error("❌ 找不到原始資料列。")
+                                st.error(f"❌ 找不到原始資料列！(系統正在尋找: 姓名='{target_name}', 日期='{target_date}')。請檢查 Google Sheet 是否有該筆資料，或日期格式是否有誤。")
+                                if debug_df is not None:
+                                    with st.expander("查看系統讀取到的資料 (Debug)"):
+                                        st.dataframe(debug_df[["姓名", "日期", "clean_name", "normalized_date"]])
 
     # ==========================================
     # Tab 3: 覆考主管審核
@@ -411,19 +427,25 @@ def main():
                     else:
                         c2.warning("*(無初考紀錄)*")
 
-                    manager_scores = render_assessment_ui(
-                        "secondary", 
-                        st.session_state.key_counter_sec,
-                        record=record,
-                        readonly_stages=["-自評", "-初考"]
-                    )
+                    # --- 表單開始 ---
+                    with st.form(key=f"form_sec_{st.session_state.key_counter_sec}"):
+                        
+                        manager_scores = render_assessment_in_form(
+                            "secondary", 
+                            st.session_state.key_counter_sec,
+                            record=record,
+                            readonly_stages=["-自評", "-初考"]
+                        )
 
-                    sec_comment = st.text_area("覆考評語", key=f"comment_sec_{st.session_state.key_counter_sec}")
+                        sec_comment = st.text_area("覆考評語")
+                        
+                        submitted_sec = st.form_submit_button("✅ 提交覆考", type="primary")
                     
-                    if st.button("✅ 提交覆考", type="primary"):
+                    if submitted_sec:
                         with st.spinner("更新資料庫中..."):
                             load_data_from_sheet.clear()
-                            row_idx = find_row_index(data, target_name, target_date)
+                            row_idx, debug_df = find_row_index(data, target_name, target_date)
+                            
                             if row_idx:
                                 headers = list(data[0].keys())
                                 clean_headers = [h.strip() for h in headers]
@@ -528,25 +550,29 @@ def main():
                     else: 
                         st.warning("請填寫最終成績與考績以完成考核。")
                         
-                        boss_scores = render_assessment_ui(
-                            "boss", 
-                            st.session_state.key_counter_boss,
-                            record=record,
-                            readonly_stages=["-自評", "-初考", "-覆考"]
-                        )
+                        # --- 表單開始 ---
+                        with st.form(key=f"form_boss_{st.session_state.key_counter_boss}"):
+                            
+                            boss_scores = render_assessment_in_form(
+                                "boss", 
+                                st.session_state.key_counter_boss,
+                                record=record,
+                                readonly_stages=["-自評", "-初考", "-覆考"]
+                            )
+                            
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
+                            with c2:
+                                final_grade = st.selectbox("🏅 最終考績", ["S", "A+", "A", "A-", "B"])
+                            
+                            submitted_boss = st.form_submit_button("🏆 核決並歸檔", type="primary")
                         
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"],
-                                                        key=f"action_{st.session_state.key_counter_boss}")
-                        with c2:
-                            final_grade = st.selectbox("🏅 最終考績", ["S", "A+", "A", "A-", "B"],
-                                                       key=f"grade_{st.session_state.key_counter_boss}")
-                        
-                        if st.button("🏆 核決並歸檔", type="primary"):
+                        if submitted_boss:
                             with st.spinner("正在歸檔..."):
                                 load_data_from_sheet.clear()
-                                row_idx = find_row_index(data, target_name, target_date)
+                                row_idx, debug_df = find_row_index(data, target_name, target_date)
+                                
                                 if row_idx:
                                     headers = list(data[0].keys())
                                     clean_headers = [h.strip() for h in headers]
