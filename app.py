@@ -21,7 +21,7 @@ def main():
 
     # --- 1. 考核標準與指標定義 (APP 的說明書) ---
     # 使用分頁 (Tabs) 整理原本繁雜的文字，讓畫面乾淨但資訊完整
-    with st.expander("📖 點此查看：考核指標定義 & 評分標準 (Page 2)", expanded=False):
+    with st.expander("📖 點此查看：考核指標定義 & 評分標準", expanded=False):
         tab1, tab2 = st.tabs(["📊 評分標準 (分數級距)", "📝 指標定義說明 (詳細內容)"])
         
         with tab1:
@@ -40,7 +40,7 @@ def main():
         with tab2:
             st.warning("此為各項職能之詳細定義，評分時請參考此標準。")
             st.markdown("""
-            | 評核面向 | 考核重點 | 專業能力定義說明 (Page 2 原文) |
+            | 評核面向 | 考核重點 | 專業能力定義說明 |
             | :--- | :--- | :--- |
             | **專業技能** | **跟診/櫃台** | 具備職務所需的各項專業知識與技能，能充份滿足工作需求。 |
             | **核心職能** | **勤務配合** | 遵循規範，維持良好的出勤紀律，並能在工作中展現積極的態度與持續進取的企圖心。 |
@@ -61,7 +61,7 @@ def main():
     with c3:
         assess_date = st.date_input("評量日期", date.today())
     with c4:
-        boss_name = st.text_input("核決老闆", value="老闆")
+        boss_name = st.text_input("最高核決", value="邱上展")
 
     st.markdown("---")
 
