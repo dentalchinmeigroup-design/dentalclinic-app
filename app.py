@@ -32,34 +32,63 @@ def connect_to_google_sheets():
         st.error(f"連線失敗: {e}")
         st.stop()
 
-# --- 2. 快取讀取資料 ---
+# --- 2. [關鍵修正] 安全讀取與寫入 (自動重試機制) ---
+def safe_read_data(worksheet):
+    """嘗試讀取資料，如果失敗就等待並重試 (最多3次)"""
+    for i in range(3):
+        try:
+            return worksheet.get_all_records()
+        except Exception as e:
+            time.sleep(1.5) # 等待 1.5 秒
+            if i == 2: # 最後一次還是失敗，才拋出錯誤
+                st.error(f"連線繁忙，請稍後再試。({e})")
+                st.stop()
+
 @st.cache_data(ttl=5)
 def load_data_from_sheet(_worksheet):
-    return _worksheet.get_all_records()
+    # 使用包裝好的安全讀取
+    return safe_read_data(_worksheet)
+
+def safe_batch_update(worksheet, updates):
+    """嘗試寫入資料，如果失敗就等待並重試"""
+    for i in range(3):
+        try:
+            worksheet.batch_update(updates)
+            return True
+        except Exception:
+            time.sleep(2)
+    st.error("寫入失敗，請檢查網路或稍後再試。")
+    return False
 
 # --- 3. 核心功能：依據標題寫入資料 ---
 def save_data_using_headers(worksheet, data_dict):
-    raw_headers = worksheet.row_values(1)
-    existing_headers = [h.strip() for h in raw_headers]
-    
-    if not existing_headers:
-        existing_headers = list(data_dict.keys())
-        worksheet.append_row(existing_headers)
-        raw_headers = existing_headers
-    
-    new_cols = [k for k in data_dict.keys() if k not in existing_headers]
-    if new_cols:
-        worksheet.add_cols(len(new_cols))
-        for i, col_name in enumerate(new_cols):
-            worksheet.update_cell(1, len(raw_headers) + i + 1, col_name)
-        existing_headers.extend(new_cols)
-        
-    row_values = []
-    for header in existing_headers:
-        val = data_dict.get(header, "")
-        row_values.append(val)
-        
-    worksheet.append_row(row_values)
+    # 這裡也加入簡單的重試
+    for attempt in range(3):
+        try:
+            raw_headers = worksheet.row_values(1)
+            existing_headers = [h.strip() for h in raw_headers]
+            
+            if not existing_headers:
+                existing_headers = list(data_dict.keys())
+                worksheet.append_row(existing_headers)
+                raw_headers = existing_headers
+            
+            new_cols = [k for k in data_dict.keys() if k not in existing_headers]
+            if new_cols:
+                worksheet.add_cols(len(new_cols))
+                for i, col_name in enumerate(new_cols):
+                    worksheet.update_cell(1, len(raw_headers) + i + 1, col_name)
+                existing_headers.extend(new_cols)
+                
+            row_values = []
+            for header in existing_headers:
+                val = data_dict.get(header, "")
+                row_values.append(val)
+                
+            worksheet.append_row(row_values)
+            return # 成功就跳出
+        except Exception:
+            time.sleep(1.5)
 
 # --- 4. 輔助函數：動態計算總分 ---
 def calculate_dynamic_score(record, suffix):
@@ -296,7 +325,9 @@ def main():
                                             col_idx = clean_headers.index(col_name) + 1
                                             updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[int(r['初考評分'])]]})
                                     
-                                    worksheet.batch_update(updates)
+                                    # 使用安全寫入
+                                    safe_batch_update(worksheet, updates)
+                                    
                                     st.session_state.key_counter_primary += 1
                                     st.success("✅ 初考完成！")
                                     time.sleep(1)
@@ -379,6 +410,7 @@ def main():
                                 headers = list(data[0].keys())
                                 clean_headers = [h.strip() for h in headers]
                                 updates = []
+                                
                                 try:
                                     status_col = clean_headers.index("目前狀態") + 1
                                     updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待核決"]]})
@@ -396,7 +428,7 @@ def main():
                                             col_idx = clean_headers.index(col_name) + 1
                                             updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[int(r['覆考評分'])]]})
                                     
-                                    worksheet.batch_update(updates)
+                                    safe_batch_update(worksheet, updates)
                                     st.session_state.key_counter_sec += 1
                                     st.success("✅ 覆考完成！")
                                     time.sleep(1)
@@ -435,7 +467,7 @@ def main():
 
                     st.markdown("---")
                     
-                    # --- 1. 顯示完整評語紀錄 (老闆要看全部) ---
+                    # --- 1. 顯示完整評語紀錄 ---
                     st.markdown("### 📝 各階段評語紀錄")
                     c1, c2, c3 = st.columns(3)
                     with c1:
@@ -521,13 +553,11 @@ def main():
                                     updates = []
                                     
                                     try:
-                                        # --- 自動檢查並新增「最終考績」欄位 ---
                                         if "最終考績" not in clean_headers:
-                                            # 如果 Sheet 裡沒有這一欄，先加進去
                                             st.toast("正在新增【最終考績】欄位...", icon="🔧")
                                             worksheet.update_cell(1, len(clean_headers) + 1, "最終考績")
-                                            clean_headers.append("最終考績") # 本地更新
-                                            time.sleep(1) # 等一下 Google
+                                            clean_headers.append("最終考績")
+                                            time.sleep(1)
 
                                         status_col = clean_headers.index("目前狀態") + 1
                                         updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["已完成"]]})
@@ -539,7 +569,6 @@ def main():
                                         suggest_col = clean_headers.index("最終建議") + 1
                                         updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, suggest_col), "values": [[final_action]]})
                                         
-                                        # 寫入最終考績
                                         grade_col = clean_headers.index("最終考績") + 1
                                         updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, grade_col), "values": [[final_grade]]})
 
@@ -549,7 +578,8 @@ def main():
                                                 col_idx = clean_headers.index(col_name) + 1
                                                 updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[int(r['最終評分'])]]})
                                         
-                                        worksheet.batch_update(updates)
+                                        # 安全寫入
+                                        safe_batch_update(worksheet, updates)
                                         st.balloons()
                                         st.success("🎉 考核流程圓滿結束！")
                                         time.sleep(2)
