@@ -155,12 +155,12 @@ def main():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- 6. 提交按鈕 (修正邏輯版) ---
+    # # --- 6. 提交按鈕 (相容性修正版) ---
     if st.button("🚀 提交完整考核表", type="primary", use_container_width=True):
         if not name:
             st.error("請務必填寫姓名！")
         else:
-            with st.spinner("正在將資料寫入雲端..."):
+            with st.spinner("正在處理資料格式並寫入..."):
                 
                 # 準備寫入的一列資料
                 row_data = {
@@ -170,10 +170,10 @@ def main():
                     "初考主管": manager_1,
                     "覆考主管": manager_2,
                     "核決老闆": boss_name,
-                    "自評總分": total_self,
-                    "初考總分": total_init,
-                    "覆考總分": total_rev,
-                    "最終總分": total_final,
+                    "自評總分": int(total_self),   # 強制轉為整數
+                    "初考總分": int(total_init),   # 強制轉為整數
+                    "覆考總分": int(total_rev),    # 強制轉為整數
+                    "最終總分": int(total_final),  # 強制轉為整數
                     "自評文字": self_comment,
                     "初考評語": manager1_comment,
                     "覆考評語": manager2_comment,
@@ -184,31 +184,39 @@ def main():
                 # 攤平細項分數
                 for index, row in edited_df.iterrows():
                     item = row["考核項目"]
-                    row_data[f"{item}_自評"] = row["同仁自評"]
-                    row_data[f"{item}_初考"] = row["初考評分"]
-                    row_data[f"{item}_覆考"] = row["覆考評分"]
-                    row_data[f"{item}_最終"] = row["最終評分"]
+                    # 這裡最重要：把 numpy 格式轉為 Python 原生 int
+                    row_data[f"{item}_自評"] = int(row["同仁自評"])
+                    row_data[f"{item}_初考"] = int(row["初考評分"])
+                    row_data[f"{item}_覆考"] = int(row["覆考評分"])
+                    row_data[f"{item}_最終"] = int(row["最終評分"])
 
+                # 轉成 DataFrame
                 new_df = pd.DataFrame([row_data])
 
-                # 【關鍵修改】: 支援手動建立的空白分頁
+                # 【關鍵修正】：將所有資料強制轉為文字 (String) 處理
+                # 這能避免 Google 試算表因為看不懂數字格式而報錯
+                new_df = new_df.astype(str)
+
                 TARGET_SHEET = "Assessment_Data"
 
                 try:
-                    # 1. 嘗試讀取現有資料
+                    # 1. 嘗試讀取
                     existing_data = conn.read(worksheet=TARGET_SHEET, ttl=0)
-                    # 2. 如果讀取成功，就合併 (Append)
+                    # 2. 合併資料
+                    # 確保現有資料也轉為字串以避免衝突
+                    existing_data = existing_data.astype(str)
                     updated_df = pd.concat([existing_data, new_df], ignore_index=True)
                 except Exception:
-                    # 3. 如果讀取失敗 (例如分頁全白)，就直接把這筆當作第一筆資料
-                    # 不去執行 create (因為分頁已存在)，直接準備 update
+                    # 3. 如果讀取失敗 (例如分頁全白)，就直接用新資料
                     updated_df = new_df
 
-                # 4. 寫入資料 (使用 update，因為您的分頁和欄位都已經準備好了)
-                conn.update(worksheet=TARGET_SHEET, data=updated_df)
-                
-                st.success(f"✅ 成功！{name} 的資料已存入 '{TARGET_SHEET}' 分頁。")
-                st.balloons()
+                # 4. 寫入資料
+                try:
+                    conn.update(worksheet=TARGET_SHEET, data=updated_df)
+                    st.success(f"✅ 成功！{name} 的資料已存入 '{TARGET_SHEET}' 分頁。")
+                    st.balloons()
+                except Exception as e:
+                    st.error(f"寫入失敗。請確認 Google 試算表中有 '{TARGET_SHEET}' 分頁，且欄位足夠。錯誤訊息: {e}")
 
 if __name__ == "__main__":
     main()
