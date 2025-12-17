@@ -79,3 +79,88 @@ def main():
 
     # 設定欄位顯示格式 (讓表格好看一點)
     column_config = {
+        "類別": st.column_config.TextColumn("類別", width="small", disabled=True),
+        "考核項目": st.column_config.TextColumn("項目", width="small", disabled=True),
+        "考核標準說明": st.column_config.TextColumn("指標說明 (唯讀)", width="large", disabled=True),
+        "同仁自評": st.column_config.NumberColumn("自評", min_value=0, max_value=10, step=1, required=True),
+        "初考評分": st.column_config.NumberColumn("初考", min_value=0, max_value=10, step=1, required=True),
+        "覆考評分": st.column_config.NumberColumn("覆考", min_value=0, max_value=10, step=1, required=True),
+        "最終評分": st.column_config.NumberColumn("最終(老闆)", min_value=0, max_value=10, step=1, required=True),
+    }
+
+    # 顯示表格供編輯
+    edited_df = st.data_editor(
+        df,
+        column_config=column_config,
+        use_container_width=True,
+        hide_index=True,
+        height=500  # 表格高度
+    )
+
+    st.markdown("---")
+
+    # --- 3. 評語區 ---
+    st.header("3. 綜合評語與建議")
+    
+    col_text1, col_text2, col_text3 = st.columns(3)
+    with col_text1:
+        self_comment = st.text_area("同仁自評 (文字)", height=150, placeholder="請輸入自評內容...")
+    with col_text2:
+        manager1_comment = st.text_area("初考主管評語", height=150, placeholder="初考主管建議...")
+    with col_text3:
+        manager2_comment = st.text_area("覆考主管評語", height=150, placeholder="覆考主管建議...")
+
+    # 最終建議
+    st.subheader("🏆 考核結論")
+    action = st.selectbox("最終考核建議 (請選擇)", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # --- 4. 提交按鈕 ---
+    if st.button("🚀 提交完整考核表", type="primary", use_container_width=True):
+        if not name:
+            st.error("請務必填寫姓名！")
+        else:
+            with st.spinner("正在將龐大的資料寫入雲端..."):
+                
+                # 準備要寫入的一列資料 (row)
+                row_data = {
+                    "姓名": name,
+                    "職等": rank,
+                    "評量日期": assess_date.strftime("%Y-%m-%d"),
+                    "初考主管": manager_1,
+                    "覆考主管": manager_2,
+                    "核決老闆": boss_name,
+                    "自評文字": self_comment,
+                    "初考評語": manager1_comment,
+                    "覆考評語": manager2_comment,
+                    "最終建議": action,
+                    "填寫時間": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+
+                # 將表格內的每一個分數「攤平」放進去
+                # 格式會變成： "跟診技能_自評": 8, "跟診技能_初考": 7 ...
+                for index, row in edited_df.iterrows():
+                    item = row["考核項目"]
+                    row_data[f"{item}_自評"] = row["同仁自評"]
+                    row_data[f"{item}_初考"] = row["初考評分"]
+                    row_data[f"{item}_覆考"] = row["覆考評分"]
+                    row_data[f"{item}_最終"] = row["最終評分"]
+
+                # 轉換成 DataFrame
+                new_df = pd.DataFrame([row_data])
+
+                # 寫入 Google Sheets
+                try:
+                    existing_data = conn.read(worksheet="Sheet1", ttl=0)
+                    updated_df = pd.concat([existing_data, new_df], ignore_index=True)
+                except:
+                    updated_df = new_df
+
+                conn.update(worksheet="Sheet1", data=updated_df)
+                
+                st.success(f"✅ 成功！{name} 的全方位考核資料已存檔。")
+                st.balloons()
+
+if __name__ == "__main__":
+    main()
