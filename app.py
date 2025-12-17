@@ -32,8 +32,8 @@ def connect_to_google_sheets():
         st.error(f"連線失敗: {e}")
         st.stop()
 
-# --- 2. 快取讀取資料 (關鍵修正：防止 API 爆量) ---
-@st.cache_data(ttl=10) # 設定資料在快取存活 10 秒，避免頻繁讀取
+# --- 2. 快取讀取資料 ---
+@st.cache_data(ttl=10) 
 def load_data_from_sheet(_worksheet):
     """從 Google Sheet 讀取所有資料 (有快取保護)"""
     return _worksheet.get_all_records()
@@ -42,29 +42,41 @@ def load_data_from_sheet(_worksheet):
 def find_row_index(all_values, name, assess_date):
     """根據已經讀下來的資料找出列數"""
     if not all_values: return None
-    headers = list(all_values[0].keys()) # 取得標題
-    
     # 轉換成 DataFrame 比較好找
     df = pd.DataFrame(all_values)
-    
-    # 尋找對應的 row index (注意：Google Sheet 是從 1 開始，且第一列是標題，所以要小心換算)
-    # 我們這邊回傳的是 "DataFrame 的 index"，之後要 +2 (因為 0-base + 1標題列 + 1開始數)
+    # 尋找對應的 row index (+2 是因為 0-base + 1標題列 + 1開始數)
     match = df.index[(df["姓名"] == name) & (df["日期"] == str(assess_date))].tolist()
-    
     if match:
-        return match[0] + 2 # 回傳 Google Sheet 的實際 Row Number
+        return match[0] + 2 
     return None
 
-def show_scoring_guide():
-    """顯示評分標準 (可重複呼叫)"""
-    with st.expander("📖 查看評分標準 (0-10分定義)", expanded=False):
-        st.markdown("""
-        * **10分 (表現卓越)**：超越預期，能主動優化流程或指導他人。
-        * **8-9分 (完全符合)**：完全達到標準，無須督導即可完成。
-        * **5-7分 (部分符合)**：大致達到標準，偶爾需要提醒或修正。
-        * **3-4分 (不符合)**：經常發生錯誤，需要密切督導。
-        * **0-2分 (多次不符合)**：經指導後仍未改善，嚴重影響運作。
-        """)
+def show_guidelines():
+    """顯示評分標準與職能說明 (整合版)"""
+    with st.expander("📖 查看評分標準與職能定義說明", expanded=False):
+        tab_a, tab_b = st.tabs(["📊 分數級距定義", "📝 職能定義說明"])
+        
+        with tab_a:
+            st.markdown("""
+            * **10分 (表現卓越)**：超越要求，表現卓越。
+            * **8-9分 (完全符合)**：完全符合基本要求，表現穩定。
+            * **5-7分 (部分符合)**：部分符合，但有建議改善事項。
+            * **3-4分 (不符合)**：不符合，首次列入改善追蹤。
+            * **0-2分 (多次不符合)**：多次不符合，需持續改善追蹤。
+            """)
+            
+        with tab_b:
+            st.markdown("""
+            ### 1. 專業技能
+            * **定義**：具備職務所需的各項專業知識與技能，能充份滿足工作需求。
+            
+            ### 2. 核心職能
+            * **勤務配合**：遵循規範，維持良好的出勤紀律，並能在工作中展現積極的態度與持續進取的企圖心。
+            * **人際協作**：與同儕保持良好互動，尊重並服從上下級指示，具備良好的團隊合作能力。
+            
+            ### 3. 行政職能
+            * **基礎行政**：具備確保診所日常營運穩定的專業能力，能完成行政與支援工作，並有效執行主管交辦任務。
+            * **應變與支援**：同時具備高度應變與問題解決能力，能即時處理突發需求，主動支援並展現團隊合作精神。
+            """)
 
 def get_assessment_items():
     return [
@@ -102,8 +114,8 @@ def main():
         st.header("📝 員工自評區")
         st.info("填寫完畢後，資料將自動送往下一關主管。")
         
-        # 顯示評分標準
-        show_scoring_guide()
+        # 顯示說明按鈕
+        show_guidelines()
 
         col1, col2, col3 = st.columns(3)
         with col1: name = st.text_input("姓名", placeholder="請輸入您的姓名")
@@ -118,7 +130,7 @@ def main():
         else: 
             next_status = "待核決"
 
-        # 建立評分表 (包含說明欄位)
+        # 建立評分表
         if "df_self" not in st.session_state:
             df = pd.DataFrame(get_assessment_items())
             df["自評"] = 0
@@ -130,7 +142,6 @@ def main():
                 "自評": st.column_config.NumberColumn(min_value=0, max_value=10, step=1, required=True),
                 "類別": st.column_config.TextColumn(disabled=True),
                 "考核項目": st.column_config.TextColumn(disabled=True),
-                # 這裡會顯示詳細說明，並且設為不可編輯
                 "說明": st.column_config.TextColumn(disabled=True, width="large"),
             },
             hide_index=True,
@@ -145,7 +156,6 @@ def main():
                 st.error("請填寫姓名")
             else:
                 with st.spinner("資料傳送中..."):
-                    # 清除快取，確保下次讀到最新資料
                     load_data_from_sheet.clear()
                     
                     headers = ["目前狀態", "姓名", "職務身份", "日期", 
@@ -181,14 +191,11 @@ def main():
     # ==========================================
     with tabs[1]:
         st.header("👮‍♂️ 初考主管審核區")
-        
-        # 顯示評分標準
-        show_scoring_guide()
+        show_guidelines()
         
         pwd1 = st.text_input("🔒 初考主管密碼", type="password", key="pwd_primary")
         
         if pwd1 == "1111": 
-            # 使用快取讀取資料，避免 API 錯誤
             data = load_data_from_sheet(worksheet)
             df_all = pd.DataFrame(data)
 
@@ -205,7 +212,6 @@ def main():
                     target_name = selected_target.split(" (")[0]
                     target_date = selected_target.split(" (")[1].replace(")", "")
                     
-                    # 抓出該筆資料
                     record = pending_df[(pending_df["姓名"] == target_name) & (pending_df["日期"] == target_date)].iloc[0]
 
                     st.markdown("---")
@@ -213,15 +219,14 @@ def main():
                     st.write(f"**員工自評總分**：{record['自評總分']}")
                     st.info(f"🗨️ **員工自評內容**：{record['自評文字']}")
 
-                    # 建立評分表
                     items = get_assessment_items()
                     input_data = []
                     for item in items:
                         i_name = item["考核項目"]
                         input_data.append({
                             "考核項目": i_name,
-                            # 讓主管看到說明
                             "說明": item["說明"],
+                            # 使用 get 避免 Key Error (如果是舊資料)
                             "自評 (參考)": record.get(f"{i_name}-自評", 0),
                             "初考評分": 0 
                         })
@@ -244,12 +249,11 @@ def main():
                     
                     if st.button("✅ 提交初考 (傳送給覆考主管)", type="primary"):
                         with st.spinner("更新資料庫中..."):
-                            load_data_from_sheet.clear() # 清除快取
-                            
+                            load_data_from_sheet.clear()
                             row_idx = find_row_index(data, target_name, target_date)
                             
                             if row_idx:
-                                headers = list(data[0].keys()) # 從快取資料拿標題
+                                headers = list(data[0].keys())
                                 updates = []
 
                                 try:
@@ -282,9 +286,7 @@ def main():
     # ==========================================
     with tabs[2]:
         st.header("👩‍⚕️ 覆考主管 (護理長) 審核區")
-        
-        # 顯示評分標準
-        show_scoring_guide()
+        show_guidelines()
 
         pwd2 = st.text_input("🔒 覆考主管密碼", type="password", key="pwd_secondary")
 
@@ -307,7 +309,10 @@ def main():
                     record = pending_df[(pending_df["姓名"] == target_name) & (pending_df["日期"] == target_date)].iloc[0]
 
                     st.markdown("---")
-                    st.subheader(f"正在審核：{target_name} ({record['職務身份']})")
+                    
+                    # 【關鍵修正】這裡改用 .get() 來讀取身份，如果是舊資料(沒有該欄位)就給預設值，避免 Key Error
+                    user_role = record.get('職務身份', '一般員工')
+                    st.subheader(f"正在審核：{target_name} ({user_role})")
                     
                     c1, c2 = st.columns(2)
                     c1.info(f"**自評總分**：{record['自評總分']}\n\n💬 {record['自評文字']}")
@@ -322,7 +327,7 @@ def main():
                         i_name = item["考核項目"]
                         input_data.append({
                             "考核項目": i_name,
-                            "說明": item["說明"], # 顯示說明
+                            "說明": item["說明"],
                             "自評": record.get(f"{i_name}-自評", 0),
                             "初考": record.get(f"{i_name}-初考", 0),
                             "覆考評分": 0
@@ -347,8 +352,7 @@ def main():
                     
                     if st.button("✅ 提交覆考 (傳送給老闆)", type="primary"):
                         with st.spinner("更新資料庫中..."):
-                            load_data_from_sheet.clear() # 清除快取
-                            
+                            load_data_from_sheet.clear()
                             row_idx = find_row_index(data, target_name, target_date)
                             if row_idx:
                                 headers = list(data[0].keys())
@@ -380,6 +384,8 @@ def main():
     # ==========================================
     with tabs[3]:
         st.header("🏆 老闆核決區")
+        show_guidelines() # 老闆也要看
+
         pwd3 = st.text_input("🔒 老闆密碼", type="password", key="pwd_boss")
 
         if pwd3 == "8888": 
@@ -465,7 +471,7 @@ def main():
                         
                         if st.button("🏆 核決並歸檔", type="primary"):
                             with st.spinner("正在歸檔..."):
-                                load_data_from_sheet.clear() # 清除快取
+                                load_data_from_sheet.clear()
 
                                 row_idx = find_row_index(data, target_name, target_date)
                                 if row_idx:
