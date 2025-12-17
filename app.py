@@ -86,19 +86,41 @@ def save_data_using_headers(worksheet, data_dict):
         except Exception:
             time.sleep(1.5)
 
-# --- 4. 輔助函數 ---
-def calculate_dynamic_score(record, suffix):
+# --- 4. 輔助函數：動態計算總分與滿分 ---
+def calculate_dynamic_score(record, suffix, ref_suffix="-自評"):
+    """
+    計算總分 (total) 和 該次考核的滿分 (max_score)。
+    滿分依據：如果該項目在 ref_suffix (通常是自評) 為 N/A，則不計入滿分。
+    """
     items = get_assessment_items()
     total = 0
+    max_score = 0
+    
     for item in items:
+        # 取得分數
         key = f"{item['考核項目']}{suffix}"
         val = record.get(key, 0)
-        if str(val) == "N/A": continue
+        
+        # 取得參考欄位 (自評) 的值，用來判斷是否 N/A
+        ref_key = f"{item['考核項目']}{ref_suffix}"
+        ref_val = record.get(ref_key, 0)
+        
+        # 如果自評是 N/A，這一題滿分就是 0 (不計分)
+        if str(ref_val) == "N/A":
+            continue
+            
+        # 如果不是 N/A，滿分 +10
+        max_score += 10
+        
+        # 計算實際得分 (如果目前這欄是 N/A 或空，算 0 分)
+        if str(val) == "N/A":
+            continue
         try:
             total += int(float(val))
         except:
             total += 0
-    return total
+            
+    return total, max_score
 
 def normalize_date(date_str):
     try:
@@ -112,15 +134,13 @@ def find_row_index(all_values, name, assess_date):
     df = pd.DataFrame(all_values)
     
     target_date = normalize_date(assess_date)
-    # 強制轉字串並去空白
     df["normalized_date"] = df["日期"].apply(normalize_date)
     df["clean_name"] = df["姓名"].astype(str).str.strip()
     target_name = name.strip()
     
     match = df.index[(df["clean_name"] == target_name) & (df["normalized_date"] == target_date)].tolist()
-    
     if match:
-        return match[0] + 2, df # 回傳 index 和 debug 用的 dataframe
+        return match[0] + 2, df 
     return None, df
 
 # --- 5. Session State ---
@@ -173,13 +193,14 @@ def get_assessment_items():
         {"類別": "行政職能", "考核項目": "應變能力", "說明": "因應臨時需求，態度靈活。"},
     ]
 
-SCORE_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "N/A"]
+# 選項定義
+SCORE_OPTIONS_FULL = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "N/A"]
+SCORE_OPTIONS_NUM = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] # 不含 N/A
 
-# --- 6. 新的 UI 渲染函數：使用 st.form 避免跳動 ---
-def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=None):
+# --- 6. 智慧 UI 渲染函數 (含 N/A 連動邏輯) ---
+def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=None, is_self_eval=False):
     """
-    這個函數只負責產生「表單內部的內容」，不包含 submit button。
-    Submit button 必須由呼叫端在 st.form 區塊內產生。
+    is_self_eval: 是否為第一關自評
     """
     items = get_assessment_items()
     user_scores = {}
@@ -193,6 +214,7 @@ def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=N
                 st.markdown(f"**{idx+1}. {item['考核項目']}**")
                 st.caption(f"說明：{item['說明']}")
                 
+                # 顯示歷史成績
                 if record is not None and readonly_stages:
                     history_text = []
                     for suffix in readonly_stages:
@@ -200,33 +222,60 @@ def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=N
                         score = record.get(f"{item['考核項目']}{suffix}", "-")
                         color = "blue" if "自評" in stage_name else "orange" if "初考" in stage_name else "red"
                         history_text.append(f":{color}[{stage_name}: {score}]")
-                    
                     if history_text:
                         st.markdown(" | ".join(history_text))
 
             with c2:
-                # Key 加上了 key_suffix，送出後 counter+1，這裡就會重置
+                # --- N/A 連動核心邏輯 ---
+                
+                # 1. 預設選項
+                options = SCORE_OPTIONS_FULL # 預設全開
+                disabled = False
+                current_index = 0 # 預設選 0 分
+                
+                # 2. 如果不是自評關，要檢查自評結果
+                if not is_self_eval and record is not None:
+                    self_score = record.get(f"{item['考核項目']}-自評", 0)
+                    
+                    if str(self_score) == "N/A":
+                        # 情境 A: 自評是 N/A -> 強制鎖定為 N/A
+                        options = ["N/A"]
+                        disabled = True
+                        current_index = 0
+                    else:
+                        # 情境 B: 自評有分數 -> 只能選數字 (拿掉 N/A)
+                        options = SCORE_OPTIONS_NUM
+                        disabled = False
+                        current_index = 0 # 預設 0 分
+                
                 score = st.selectbox(
                     f"評分 ({item['考核項目']})", 
-                    options=SCORE_OPTIONS,
-                    index=0, 
+                    options=options,
+                    index=current_index,
+                    disabled=disabled,
                     key=f"{prefix}_score_{idx}_{key_suffix}", 
                     label_visibility="collapsed"
                 )
+                
                 user_scores[item['考核項目']] = score
             st.divider()
             
     return user_scores
 
+# --- 7. 前端計算總分與滿分 ---
 def safe_sum_scores_from_dict(score_dict):
     total = 0
+    max_score = 0
     for val in score_dict.values():
-        if str(val) == "N/A": continue
+        if str(val) == "N/A":
+            # 如果選 N/A，不計入滿分
+            continue
         try:
             total += int(float(val))
+            max_score += 10 # 有效項目，滿分+10
         except:
             pass
-    return total
+    return total, max_score
 
 def main():
     st.set_page_config(page_title="考核系統", layout="wide")
@@ -248,7 +297,6 @@ def main():
         st.header("📝 員工自評區")
         show_guidelines()
 
-        # 使用 form 包裹所有輸入，防止每填一格就跳動
         with st.form(key=f"form_self_{st.session_state.key_counter_self}"):
             col1, col2, col3 = st.columns(3)
             with col1: 
@@ -258,12 +306,11 @@ def main():
             with col3: 
                 assess_date = st.date_input("評量日期", date.today())
 
-            # 呼叫渲染函數，產生題目
-            user_scores = render_assessment_in_form("self", st.session_state.key_counter_self)
+            # 自評關卡：is_self_eval=True (N/A 自由選)
+            user_scores = render_assessment_in_form("self", st.session_state.key_counter_self, is_self_eval=True)
             
             self_comment = st.text_area("自評文字", placeholder="請輸入...")
 
-            # 提交按鈕必須在 form 內
             submitted = st.form_submit_button("🚀 送出自評", type="primary")
 
         if submitted:
@@ -276,14 +323,14 @@ def main():
 
                 with st.spinner("資料傳送中..."):
                     load_data_from_sheet.clear()
-                    total_score = safe_sum_scores_from_dict(user_scores)
+                    total_score, max_score = safe_sum_scores_from_dict(user_scores)
 
                     data_to_save = {
                         "目前狀態": next_status,
                         "姓名": name,
                         "職務身份": role,
                         "日期": assess_date.strftime("%Y-%m-%d"),
-                        "自評總分": total_score,
+                        "自評總分": total_score, # 存分數
                         "初考總分": 0, "覆考總分": 0, "最終總分": 0,
                         "自評文字": self_comment,
                         "初考評語": "", "覆考評語": "", "最終建議": "",
@@ -298,9 +345,8 @@ def main():
 
                     save_data_using_headers(worksheet, data_to_save)
                     
-                    # 送出成功後，計數器 +1，強迫下次重新渲染表單 (清空)
                     st.session_state.key_counter_self += 1
-                    st.success(f"✅ 自評已送出！案件已轉移至【{next_status}】列表。")
+                    st.success(f"✅ 自評已送出！案件已轉移至【{next_status}】列表。(總分: {total_score}/{max_score})")
                     time.sleep(1)
                     st.rerun()
 
@@ -331,63 +377,76 @@ def main():
                     st.markdown("---")
                     st.subheader(f"正在審核：{target_name}")
                     
-                    real_self_score = calculate_dynamic_score(record, '-自評')
-                    st.write(f"**員工自評總分**：{real_self_score}")
+                    # 計算並顯示滿分
+                    real_self_score, self_max = calculate_dynamic_score(record, '-自評', '-自評')
+                    st.write(f"**員工自評總分**：{real_self_score} / {self_max}")
                     st.info(f"🗨️ **員工自評內容**：{record.get('自評文字', '')}")
 
                     # --- 表單開始 ---
                     with st.form(key=f"form_primary_{st.session_state.key_counter_primary}"):
                         
+                        # 初考關卡：傳入 record 以便檢查 N/A 邏輯
                         manager_scores = render_assessment_in_form(
                             "primary", 
                             st.session_state.key_counter_primary,
                             record=record,
-                            readonly_stages=["-自評"] 
+                            readonly_stages=["-自評"],
+                            is_self_eval=False
                         )
 
-                        manager_comment = st.text_area("初考評語")
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            manager_name = st.text_input("初考主管簽名")
+                        with c2:
+                            manager_comment = st.text_area("初考評語")
                         
                         submitted_primary = st.form_submit_button("✅ 提交初考", type="primary")
                     
                     if submitted_primary:
-                        with st.spinner("更新資料庫中..."):
-                            load_data_from_sheet.clear()
-                            # 嘗試尋找資料列，並回傳 debug 用的 df
-                            row_idx, debug_df = find_row_index(data, target_name, target_date)
-                            
-                            if row_idx:
-                                headers = list(data[0].keys())
-                                clean_headers = [h.strip() for h in headers]
-                                updates = []
-                                try:
-                                    status_col = clean_headers.index("目前狀態") + 1
-                                    updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待覆考"]]})
-                                    
-                                    total_score = safe_sum_scores_from_dict(manager_scores)
-                                    score_sum_col = clean_headers.index("初考總分") + 1
-                                    updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
+                        if not manager_name:
+                            st.error("請簽名！")
+                        else:
+                            with st.spinner("更新資料庫中..."):
+                                load_data_from_sheet.clear()
+                                row_idx, debug_df = find_row_index(data, target_name, target_date)
+                                
+                                if row_idx:
+                                    headers = list(data[0].keys())
+                                    clean_headers = [h.strip() for h in headers]
+                                    updates = []
+                                    try:
+                                        status_col = clean_headers.index("目前狀態") + 1
+                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待覆考"]]})
+                                        
+                                        total_score, max_score = safe_sum_scores_from_dict(manager_scores)
+                                        score_sum_col = clean_headers.index("初考總分") + 1
+                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
 
-                                    comment_col = clean_headers.index("初考評語") + 1
-                                    updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, comment_col), "values": [[manager_comment]]})
+                                        # 寫入評語與簽名 (簽名寫入到「初考主管」欄位)
+                                        comment_col = clean_headers.index("初考評語") + 1
+                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, comment_col), "values": [[manager_comment]]})
+                                        
+                                        # 如果沒有「初考主管」欄位，可能需要手動加，但這裡假設標題是對的，或使用 save_data_using_headers 補強
+                                        # 為了保險，這裡我們用 append_col 的邏輯太複雜，建議先檢查標題
+                                        if "初考主管" in clean_headers:
+                                            manager_col = clean_headers.index("初考主管") + 1
+                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, manager_col), "values": [[manager_name]]})
 
-                                    for item_name, score in manager_scores.items():
-                                        col_name = f"{item_name}-初考"
-                                        if col_name in clean_headers:
-                                            col_idx = clean_headers.index(col_name) + 1
-                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[score]]})
-                                    
-                                    safe_batch_update(worksheet, updates)
-                                    st.session_state.key_counter_primary += 1
-                                    st.success("✅ 初考完成！")
-                                    time.sleep(1)
-                                    st.rerun()
-                                except ValueError as e:
-                                    st.error(f"欄位對應錯誤: {e}")
-                            else:
-                                st.error(f"❌ 找不到原始資料列！(系統正在尋找: 姓名='{target_name}', 日期='{target_date}')。請檢查 Google Sheet 是否有該筆資料，或日期格式是否有誤。")
-                                if debug_df is not None:
-                                    with st.expander("查看系統讀取到的資料 (Debug)"):
-                                        st.dataframe(debug_df[["姓名", "日期", "clean_name", "normalized_date"]])
+                                        for item_name, score in manager_scores.items():
+                                            col_name = f"{item_name}-初考"
+                                            if col_name in clean_headers:
+                                                col_idx = clean_headers.index(col_name) + 1
+                                                updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[score]]})
+                                        
+                                        safe_batch_update(worksheet, updates)
+                                        st.session_state.key_counter_primary += 1
+                                        st.success(f"✅ 初考完成！(分數: {total_score}/{max_score})")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    except ValueError as e:
+                                        st.error(f"欄位對應錯誤: {e}")
+                                else:
+                                    st.error(f"❌ 找不到原始資料列。")
 
     # ==========================================
     # Tab 3: 覆考主管審核
@@ -417,13 +476,14 @@ def main():
                     user_role = record.get('職務身份', '一般員工')
                     st.subheader(f"正在審核：{target_name} ({user_role})")
                     
-                    real_self_score = calculate_dynamic_score(record, '-自評')
-                    real_primary_score = calculate_dynamic_score(record, '-初考')
+                    # 計算各階段滿分 (基準都是自評)
+                    real_self, self_max = calculate_dynamic_score(record, '-自評', '-自評')
+                    real_prim, prim_max = calculate_dynamic_score(record, '-初考', '-自評')
                     
                     c1, c2 = st.columns(2)
-                    c1.info(f"**自評總分**：{real_self_score}\n\n💬 {record.get('自評文字', '')}")
-                    if real_primary_score > 0:
-                        c2.warning(f"**初考總分**：{real_primary_score}\n\n💬 {record.get('初考評語', '')}")
+                    c1.info(f"**自評總分**：{real_self} / {self_max}\n\n💬 {record.get('自評文字', '')}")
+                    if real_prim > 0:
+                        c2.warning(f"**初考總分**：{real_prim} / {prim_max}\n\n💬 {record.get('初考評語', '')}\n\n👮‍♂️ 簽名：{record.get('初考主管', '')}")
                     else:
                         c2.warning("*(無初考紀錄)*")
 
@@ -434,48 +494,60 @@ def main():
                             "secondary", 
                             st.session_state.key_counter_sec,
                             record=record,
-                            readonly_stages=["-自評", "-初考"]
+                            readonly_stages=["-自評", "-初考"],
+                            is_self_eval=False
                         )
 
-                        sec_comment = st.text_area("覆考評語")
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            sec_name = st.text_input("覆考主管簽名")
+                        with c2:
+                            sec_comment = st.text_area("覆考評語")
                         
                         submitted_sec = st.form_submit_button("✅ 提交覆考", type="primary")
                     
                     if submitted_sec:
-                        with st.spinner("更新資料庫中..."):
-                            load_data_from_sheet.clear()
-                            row_idx, debug_df = find_row_index(data, target_name, target_date)
-                            
-                            if row_idx:
-                                headers = list(data[0].keys())
-                                clean_headers = [h.strip() for h in headers]
-                                updates = []
-                                try:
-                                    status_col = clean_headers.index("目前狀態") + 1
-                                    updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待核決"]]})
-                                    
-                                    total_score = safe_sum_scores_from_dict(manager_scores)
-                                    score_sum_col = clean_headers.index("覆考總分") + 1
-                                    updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
+                        if not sec_name:
+                            st.error("請簽名！")
+                        else:
+                            with st.spinner("更新資料庫中..."):
+                                load_data_from_sheet.clear()
+                                row_idx, debug_df = find_row_index(data, target_name, target_date)
+                                
+                                if row_idx:
+                                    headers = list(data[0].keys())
+                                    clean_headers = [h.strip() for h in headers]
+                                    updates = []
+                                    try:
+                                        status_col = clean_headers.index("目前狀態") + 1
+                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["待核決"]]})
+                                        
+                                        total_score, max_score = safe_sum_scores_from_dict(manager_scores)
+                                        score_sum_col = clean_headers.index("覆考總分") + 1
+                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
 
-                                    comment_col = clean_headers.index("覆考評語") + 1
-                                    updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, comment_col), "values": [[sec_comment]]})
+                                        comment_col = clean_headers.index("覆考評語") + 1
+                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, comment_col), "values": [[sec_comment]]})
 
-                                    for item_name, score in manager_scores.items():
-                                        col_name = f"{item_name}-覆考"
-                                        if col_name in clean_headers:
-                                            col_idx = clean_headers.index(col_name) + 1
-                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[score]]})
-                                    
-                                    safe_batch_update(worksheet, updates)
-                                    st.session_state.key_counter_sec += 1
-                                    st.success("✅ 覆考完成！")
-                                    time.sleep(1)
-                                    st.rerun()
-                                except ValueError as e:
-                                    st.error(f"欄位錯誤: {e}")
-                            else:
-                                st.error("❌ 找不到原始資料列。")
+                                        if "覆考主管" in clean_headers:
+                                            manager_col = clean_headers.index("覆考主管") + 1
+                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, manager_col), "values": [[sec_name]]})
+
+                                        for item_name, score in manager_scores.items():
+                                            col_name = f"{item_name}-覆考"
+                                            if col_name in clean_headers:
+                                                col_idx = clean_headers.index(col_name) + 1
+                                                updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[score]]})
+                                        
+                                        safe_batch_update(worksheet, updates)
+                                        st.session_state.key_counter_sec += 1
+                                        st.success(f"✅ 覆考完成！(分數: {total_score}/{max_score})")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    except ValueError as e:
+                                        st.error(f"欄位錯誤: {e}")
+                                else:
+                                    st.error("❌ 找不到原始資料列。")
 
     # ==========================================
     # Tab 4: 老闆最終核決
@@ -513,24 +585,24 @@ def main():
                     with c1:
                         st.info(f"**🗣️ 員工自評**\n\n{record.get('自評文字', '無')}")
                     with c2:
-                        st.warning(f"**👮‍♂️ 初考評語**\n\n{record.get('初考評語', '無')}")
+                        st.warning(f"**👮‍♂️ 初考評語**\n\n{record.get('初考評語', '無')}\n\n(簽名: {record.get('初考主管', '')})")
                     with c3:
-                        st.error(f"**👩‍⚕️ 覆考評語**\n\n{record.get('覆考評語', '無')}")
+                        st.error(f"**👩‍⚕️ 覆考評語**\n\n{record.get('覆考評語', '無')}\n\n(簽名: {record.get('覆考主管', '')})")
 
                     st.markdown("---")
                     
-                    real_self = calculate_dynamic_score(record, '-自評')
-                    real_prim = calculate_dynamic_score(record, '-初考')
-                    real_sec = calculate_dynamic_score(record, '-覆考')
-                    real_final = calculate_dynamic_score(record, '-最終')
+                    real_self, s_max = calculate_dynamic_score(record, '-自評', '-自評')
+                    real_prim, p_max = calculate_dynamic_score(record, '-初考', '-自評')
+                    real_sec, sec_max = calculate_dynamic_score(record, '-覆考', '-自評')
+                    real_final, f_max = calculate_dynamic_score(record, '-最終', '-自評')
 
                     col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("自評總分", real_self)
-                    col2.metric("初考總分", real_prim)
-                    col3.metric("覆考總分", real_sec)
+                    col1.metric("自評總分", f"{real_self} / {s_max}")
+                    col2.metric("初考總分", f"{real_prim} / {p_max}")
+                    col3.metric("覆考總分", f"{real_sec} / {sec_max}")
                     
                     if view_mode == "歷史已完成案件":
-                        col4.metric("🏆 最終總分", real_final)
+                        col4.metric("🏆 最終總分", f"{real_final} / {f_max}")
                         st.success(f"📌 最終建議：{record.get('最終建議', '')}")
                         st.success(f"🏅 最終考績：{record.get('最終考績', '未評定')}")
                         
@@ -550,14 +622,14 @@ def main():
                     else: 
                         st.warning("請填寫最終成績與考績以完成考核。")
                         
-                        # --- 表單開始 ---
                         with st.form(key=f"form_boss_{st.session_state.key_counter_boss}"):
                             
                             boss_scores = render_assessment_in_form(
                                 "boss", 
                                 st.session_state.key_counter_boss,
                                 record=record,
-                                readonly_stages=["-自評", "-初考", "-覆考"]
+                                readonly_stages=["-自評", "-初考", "-覆考"],
+                                is_self_eval=False
                             )
                             
                             c1, c2 = st.columns(2)
@@ -588,7 +660,7 @@ def main():
                                         status_col = clean_headers.index("目前狀態") + 1
                                         updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["已完成"]]})
                                         
-                                        total_score = safe_sum_scores_from_dict(boss_scores)
+                                        total_score, max_score = safe_sum_scores_from_dict(boss_scores)
                                         score_sum_col = clean_headers.index("最終總分") + 1
                                         updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
 
@@ -607,7 +679,7 @@ def main():
                                         safe_batch_update(worksheet, updates)
                                         st.session_state.key_counter_boss += 1
                                         st.balloons()
-                                        st.success("🎉 考核流程圓滿結束！")
+                                        st.success(f"🎉 考核流程圓滿結束！(分數: {total_score}/{max_score})")
                                         time.sleep(2)
                                         st.rerun()
                                     except ValueError as e:
