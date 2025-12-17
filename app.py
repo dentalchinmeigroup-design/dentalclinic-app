@@ -164,7 +164,7 @@ def main():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- 6. 提交按鈕 ---
+    # # --- 6. 提交按鈕 ---
     if st.button("🚀 提交完整考核表", type="primary", use_container_width=True):
         if not name:
             st.error("請務必填寫姓名！")
@@ -203,17 +203,20 @@ def main():
                 # 轉換成 DataFrame
                 new_df = pd.DataFrame([row_data])
 
-                # 寫入 Google Sheets
+                # 【關鍵修改】: 改用 "Assessment_Data" (或任何新名字)
+                # 這樣機器人會自動建立新分頁，不會被舊的 Sheet1 限制住
+                TARGET_SHEET = "Assessment_Data"
+
                 try:
-                    existing_data = conn.read(worksheet="Sheet1", ttl=0)
+                    # 嘗試讀取現有資料
+                    existing_data = conn.read(worksheet=TARGET_SHEET, ttl=0)
                     updated_df = pd.concat([existing_data, new_df], ignore_index=True)
-                except:
+                except Exception:
+                    # 如果分頁不存在 (第一次)，就直接用新資料
                     updated_df = new_df
 
-                conn.update(worksheet="Sheet1", data=updated_df)
+                # 寫入資料 (如果分頁不存在，它會自動 Create)
+                conn.update(worksheet=TARGET_SHEET, data=updated_df)
                 
-                st.success(f"✅ 成功！{name} 的全方位考核資料 (含總分) 已存檔。")
+                st.success(f"✅ 成功！{name} 的全方位考核資料已存檔至 '{TARGET_SHEET}' 分頁。")
                 st.balloons()
-
-if __name__ == "__main__":
-    main()
