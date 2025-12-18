@@ -201,16 +201,20 @@ def show_guidelines():
             st.markdown("""
             ### 1. 專業技能
             * **跟診/櫃台**：具備職務所需的各項專業知識與技能，能充份滿足工作需求。
+            
             ### 2. 核心職能
             * **勤務配合**：遵循規範，維持良好的出勤紀律，並能在工作中展現積極的態度與持續進取的企圖心。
             * **人際協作**：與同儕保持良好互動，尊重並服從上下級指示，具備良好的團隊合作能力。
+            
             ### 3. 行政職能
             * **基礎行政**：具備確保診所日常營運穩定的專業能力，能完成行政與支援工作，並有效執行主管交辦任務。
             * **應變與支援**：同時具備高度應變與問題解決能力，能即時處理突發需求，主動支援並展現團隊合作精神。
+            
+            *(本考核表內容屬診所機密，嚴禁翻拍外流)*
             """)
 
 def get_assessment_items():
-    """[ cite: 6 ] 依據 PDF 內容填入完整說明"""
+    """依據 PDF 內容填入完整說明"""
     return [
         {"類別": "專業技能", "考核項目": "跟診技能", "說明": "跟診：器械與診間準備，依照SOP操作，器械準備熟練，無重大缺失；耗材不足能立即補充。"},
         {"類別": "專業技能", "考核項目": "櫃台技能", "說明": "櫃台：準確完成約診、報表與櫃檯行政作業，確保資料正確無誤。"},
@@ -319,19 +323,21 @@ def main():
                 col1, col2, col3, col4 = st.columns(4)
                 with col1: 
                     name = st.text_input("姓名", placeholder="請輸入姓名")
+                
+                # [關鍵修改] 宣告變數，確保後面邏輯正確
+                primary_group = None 
+                
                 with col2: 
                     # 職務選擇
-                    role = st.selectbox("您的職務身份", ["一般員工", "主管", "護理長"])
+                    role = st.selectbox("您的職務身份", ["一般員工", "主管", "護理長"], key="role_select")
                 
-                # [關鍵修改] 動態顯示上呈主管選項
-                if role == "一般員工":
-                    with col3:
+                with col3:
+                    # [關鍵修改] 根據身份顯示/隱藏上呈選單
+                    if role == "一般員工":
                         primary_group = st.selectbox("上呈初考主管", ["跟診主管", "櫃檯主管"], help="請選擇負責考核您的直屬主管")
-                else:
-                    # 主管與護理長不需填寫，給一個預設值，並佔位
-                    primary_group = None
-                    with col3:
-                        st.info("✅ 此職務免填初考主管，將自動跳關。")
+                    else:
+                        st.write("") # 排版用空格
+                        st.info("✅ 此職務免填初考主管")
                 
                 with col4: 
                     assess_date = st.date_input("評量日期", date.today())
@@ -356,7 +362,7 @@ def main():
                         load_data_from_sheet.clear()
                         total_score, max_score = safe_sum_scores_from_dict(user_scores)
                         
-                        # 處理組別
+                        # 處理組別邏輯
                         if primary_group:
                             group_val = "跟診" if primary_group == "跟診主管" else "櫃檯"
                         else:
