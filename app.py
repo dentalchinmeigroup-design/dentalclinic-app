@@ -5,7 +5,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import time
 import plotly.graph_objects as go
-import streamlit.components.v1 as components # [新增] 用於控制捲動
+import streamlit.components.v1 as components # 用於控制捲動
 
 # --- 設定連線範圍 ---
 SCOPES = [
@@ -289,8 +289,10 @@ def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=N
                 disabled = False
                 current_index = 0
                 
+                # --- N/A 連動與預設值邏輯 ---
                 if not is_self_eval and record is not None:
                     self_score = record.get(f"{item['考核項目']}-自評", 0)
+                    
                     if str(self_score) == "N/A":
                         options = ["N/A"]
                         disabled = True
@@ -426,7 +428,7 @@ def main():
     # ==========================================
     with tabs[1]:
         if st.session_state.submitted_clinical:
-            show_completion_screen("初考(跟診)已完成", "案件已移交給覆考主管。", "btn_back_clin")
+            show_completion_screen("初考(跟診)已完成", "所有案件已處理完畢。", "btn_back_clin")
         else:
             st.header("🦷 初考主管審核 (跟診組)")
             add_security_watermark("跟診主管考核")
@@ -508,9 +510,11 @@ def main():
                                             
                                             safe_batch_update(worksheet, updates)
                                             
+                                            # [連續評核核心邏輯]
                                             load_data_from_sheet.clear()
                                             fresh_data = load_data_from_sheet(worksheet)
                                             df_fresh = pd.DataFrame(fresh_data)
+                                            
                                             remaining = df_fresh[
                                                 (df_fresh["目前狀態"] == "待初考") & 
                                                 (df_fresh["初考組別"] == "跟診")
@@ -536,7 +540,7 @@ def main():
     # ==========================================
     with tabs[2]:
         if st.session_state.submitted_front:
-            show_completion_screen("初考(櫃檯)已完成", "案件已移交給覆考主管。", "btn_back_front")
+            show_completion_screen("初考(櫃檯)已完成", "所有案件已處理完畢。", "btn_back_front")
         else:
             st.header("🖥️ 初考主管審核 (櫃檯組)")
             add_security_watermark("櫃檯主管考核")
@@ -618,6 +622,7 @@ def main():
                                             
                                             safe_batch_update(worksheet, updates)
                                             
+                                            # [連續評核核心邏輯]
                                             load_data_from_sheet.clear()
                                             fresh_data = load_data_from_sheet(worksheet)
                                             df_fresh = pd.DataFrame(fresh_data)
@@ -735,6 +740,7 @@ def main():
                                             
                                             safe_batch_update(worksheet, updates)
                                             
+                                            # [連續評核核心邏輯]
                                             load_data_from_sheet.clear()
                                             fresh_data = load_data_from_sheet(worksheet)
                                             df_fresh = pd.DataFrame(fresh_data)
@@ -770,194 +776,282 @@ def main():
             view_mode = st.radio("檢視模式", ["待核決案件", "歷史已完成案件", "📊 全診所總覽"], horizontal=True)
 
             if not df_all.empty and "目前狀態" in df_all.columns:
-                if view_mode == "待核決案件":
-                    pending_df = df_all[df_all["目前狀態"] == "待核決"]
-                else:
-                    pending_df = df_all[df_all["目前狀態"] == "已完成"]
-
-                if pending_df.empty:
-                    st.info(f"🎉 目前沒有 {view_mode}。")
-                else:
-                    # 1. 日期排序
-                    pending_df["dt_obj"] = pd.to_datetime(pending_df["日期"], errors='coerce').dt.date
-                    pending_df = pending_df.sort_values(by="dt_obj", ascending=False)
-
-                    # 2. 日期篩選
-                    if not pending_df["dt_obj"].dropna().empty:
-                        min_date = pending_df["dt_obj"].min()
-                        max_date = pending_df["dt_obj"].max()
-                        st.markdown("### 🔍 篩選與選擇")
-                        c1, c2 = st.columns([1, 2])
-                        with c1:
-                            date_range = st.date_input("📅 篩選日期範圍", [min_date, max_date])
-                        
-                        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-                            start_d, end_d = date_range
-                            pending_df = pending_df[
-                                (pending_df["dt_obj"] >= start_d) & 
-                                (pending_df["dt_obj"] <= end_d)
-                            ]
+                
+                # --- Mode A: 全診所總覽 ---
+                if view_mode == "📊 全診所總覽":
+                    st.markdown("### 🏥 診所戰力儀表板")
                     
-                    if pending_df.empty:
-                        st.warning("⚠️ 此日期範圍內無資料。")
+                    completed_df = df_all[df_all["目前狀態"] == "已完成"].copy()
+                    
+                    if completed_df.empty:
+                        st.info("目前尚無已完成的考核資料，無法分析。")
                     else:
-                        target_options = [f"{row['姓名']} ({row['日期']})" for i, row in pending_df.iterrows()]
-                        selected_target = st.selectbox("請選擇對象", target_options, key="sel_boss")
-                        
-                        target_name = selected_target.split(" (")[0]
-                        target_date_str = selected_target.split(" (")[1].replace(")", "")
-                        record = pending_df[(pending_df["姓名"] == target_name) & (pending_df["日期"] == target_date_str)].iloc[0]
-
-                        # 歷史趨勢圖
-                        if view_mode == "歷史已完成案件":
-                            st.markdown("### 📈 該員工歷史成績趨勢")
-                            history_df = df_all[df_all["姓名"] == target_name].copy()
-                            history_df["dt_obj"] = pd.to_datetime(history_df["日期"], errors='coerce')
-                            history_df = history_df.sort_values("dt_obj") 
-                            if not history_df.empty:
-                                chart_data = history_df[["dt_obj", "最終總分"]].set_index("dt_obj")
-                                st.line_chart(chart_data)
-
-                        st.markdown("---")
-                        
-                        st.markdown("### 📝 各階段評語紀錄")
-                        c1, c2, c3 = st.columns(3)
-                        with c1:
-                            st.info(f"**🗣️ 員工自評**\n\n{record.get('自評文字', '無')}")
-                        with c2:
-                            if record.get("初考組別", "") == "免初考":
-                                st.warning("**⚠️ 此員工免初考**")
+                        try:
+                            completed_df["最終總分"] = pd.to_numeric(completed_df["最終總分"], errors='coerce').fillna(0)
+                            avg_score = completed_df["最終總分"].mean()
+                            
+                            st.markdown("#### 本季全診所平均分數")
+                            delta_color = "normal"
+                            if avg_score < 80:
+                                delta_color = "inverse"
+                                st.error(f"⚠️ 平均分數 {avg_score:.1f} 低於 80 分，請注意！")
                             else:
-                                st.warning(f"**👮‍♂️ 初考評語**\n\n{record.get('初考評語', '無')}\n\n(簽名: {record.get('初考主管', '')})")
-                        with c3:
-                            st.error(f"**👩‍⚕️ 覆考評語**\n\n{record.get('覆考評語', '無')}\n\n(簽名: {record.get('覆考主管', '')})")
+                                st.success(f"✅ 平均分數 {avg_score:.1f} 表現良好")
+                                
+                            st.metric("平均總分", f"{avg_score:.1f}", delta=f"{avg_score - 80:.1f} (vs 80分)", delta_color=delta_color)
+                            
+                        except Exception as e:
+                            st.error(f"計算平均分時發生錯誤: {e}")
 
                         st.markdown("---")
-                        
-                        real_self, s_max = calculate_dynamic_score(record, '-自評', '-自評')
-                        real_prim, p_max = calculate_dynamic_score(record, '-初考', '-自評')
-                        real_sec, sec_max = calculate_dynamic_score(record, '-覆考', '-自評')
-                        real_final, f_max = calculate_dynamic_score(record, '-最終', '-自評')
 
-                        col1, col2, col3, col4 = st.columns(4)
-                        col1.metric("自評總分", f"{real_self} / {s_max}")
+                        st.markdown("#### 🎯 各面向能力分佈 (雷達圖)")
                         
-                        if record.get("初考組別", "") == "免初考":
-                            col2.metric("初考總分", "免初考")
-                        else:
-                            col2.metric("初考總分", f"{real_prim} / {p_max}")
-                            
-                        col3.metric("覆考總分", f"{real_sec} / {sec_max}")
+                        items = get_assessment_items()
+                        cat_map = {i['考核項目']: i['類別'] for i in items}
+                        categories = list(set(cat_map.values()))
                         
-                        if view_mode == "歷史已完成案件":
-                            col4.metric("🏆 最終總分", f"{real_final} / {f_max}")
-                            st.success(f"📌 最終建議：{record.get('最終建議', '')}")
-                            st.success(f"🏅 最終考績：{record.get('最終考績', '未評定')}")
+                        cat_scores = {cat: [] for cat in categories}
+                        
+                        for _, row in completed_df.iterrows():
+                            for item in items:
+                                col_name = f"{item['考核項目']}-最終"
+                                val = row.get(col_name, 0)
+                                if str(val) != 'N/A' and str(val) != '':
+                                    try:
+                                        cat_scores[cat_map[item['考核項目']]].append(float(val))
+                                    except:
+                                        pass
+                        
+                        cat_means = {}
+                        for cat, scores in cat_scores.items():
+                            if scores:
+                                cat_means[cat] = sum(scores) / len(scores)
+                            else:
+                                cat_means[cat] = 0
+                        
+                        if cat_means:
+                            categories_list = list(cat_means.keys())
+                            values_list = list(cat_means.values())
                             
-                            csv = pending_df.to_csv(index=False).encode('utf-8-sig')
-                            st.download_button(
-                                label="📥 下載本頁搜尋結果 (Excel/CSV)",
-                                data=csv,
-                                file_name=f"assessment_export_{date.today()}.csv",
-                                mime="text/csv",
+                            categories_list.append(categories_list[0])
+                            values_list.append(values_list[0])
+                            
+                            fig = go.Figure()
+                            fig.add_trace(go.Scatterpolar(
+                                r=values_list,
+                                theta=categories_list,
+                                fill='toself',
+                                name='全診所平均'
+                            ))
+                            
+                            fig.update_layout(
+                                polar=dict(
+                                    radialaxis=dict(
+                                        visible=True,
+                                        range=[0, 10]
+                                    )),
+                                showlegend=False
                             )
                             
-                            st.markdown("### 詳細成績單")
-                            items = get_assessment_items()
-                            detail_rows = []
-                            for item in items:
-                                i_name = item["考核項目"]
-                                prim_score = "免初考" if record.get("初考組別", "") == "免初考" else str(record.get(f"{i_name}-初考", "-"))
-                                
-                                detail_rows.append({
-                                    "考核項目": i_name,
-                                    "自評": str(record.get(f"{i_name}-自評", "-")),
-                                    "初考": prim_score,
-                                    "覆考": str(record.get(f"{i_name}-覆考", "-")),
-                                    "最終": str(record.get(f"{i_name}-最終", "-")),
-                                })
-                            st.table(pd.DataFrame(detail_rows))
-                        else: 
-                            st.warning("請填寫最終成績與考績以完成考核。")
+                            st.plotly_chart(fig, use_container_width=True)
                             
-                            with st.form(key=f"form_boss_{st.session_state.key_counter_boss}"):
-                                stages_to_show = ["-自評"]
-                                if record.get("初考組別", "") != "免初考":
-                                    stages_to_show.append("-初考")
-                                stages_to_show.append("-覆考")
+                            weakest_cat = min(cat_means, key=cat_means.get)
+                            strongest_cat = max(cat_means, key=cat_means.get)
+                            st.info(f"💡 分析建議：目前診所優勢在 **【{strongest_cat}】**，但 **【{weakest_cat}】** 相對較弱，建議作為下一季教育訓練重點。")
 
-                                avg_defaults = calculate_average_defaults(record)
+                # --- Mode B & C: 待核決 & 歷史 ---
+                else:
+                    if view_mode == "待核決案件":
+                        pending_df = df_all[df_all["目前狀態"] == "待核決"]
+                    else:
+                        pending_df = df_all[df_all["目前狀態"] == "已完成"]
+
+                    if pending_df.empty:
+                        st.info(f"🎉 目前沒有 {view_mode}。")
+                    else:
+                        pending_df["dt_obj"] = pd.to_datetime(pending_df["日期"], errors='coerce').dt.date
+                        pending_df = pending_df.sort_values(by="dt_obj", ascending=False)
+
+                        if not pending_df["dt_obj"].dropna().empty:
+                            min_date = pending_df["dt_obj"].min()
+                            max_date = pending_df["dt_obj"].max()
+                            
+                            st.markdown("### 🔍 篩選與選擇")
+                            c1, c2 = st.columns([1, 2])
+                            with c1:
+                                date_range = st.date_input("📅 篩選日期範圍", [min_date, max_date])
+                            
+                            if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+                                start_d, end_d = date_range
+                                pending_df = pending_df[
+                                    (pending_df["dt_obj"] >= start_d) & 
+                                    (pending_df["dt_obj"] <= end_d)
+                                ]
+                        
+                        if pending_df.empty:
+                            st.warning("⚠️ 此日期範圍內無資料。")
+                        else:
+                            target_options = [f"{row['姓名']} ({row['日期']})" for i, row in pending_df.iterrows()]
+                            selected_target = st.selectbox("請選擇對象", target_options, key="sel_boss")
+                            
+                            target_name = selected_target.split(" (")[0]
+                            target_date_str = selected_target.split(" (")[1].replace(")", "")
+                            record = pending_df[(pending_df["姓名"] == target_name) & (pending_df["日期"] == target_date_str)].iloc[0]
+
+                            if view_mode == "歷史已完成案件":
+                                st.markdown("### 📈 該員工歷史成績趨勢")
+                                history_df = df_all[df_all["姓名"] == target_name].copy()
+                                history_df["dt_obj"] = pd.to_datetime(history_df["日期"], errors='coerce')
+                                history_df = history_df.sort_values("dt_obj") 
+                                if not history_df.empty:
+                                    chart_data = history_df[["dt_obj", "最終總分"]].set_index("dt_obj")
+                                    st.line_chart(chart_data)
+
+                            st.markdown("---")
+                            
+                            st.markdown("### 📝 各階段評語紀錄")
+                            c1, c2, c3 = st.columns(3)
+                            with c1:
+                                st.info(f"**🗣️ 員工自評**\n\n{record.get('自評文字', '無')}")
+                            with c2:
+                                if record.get("初考組別", "") == "免初考":
+                                    st.warning("**⚠️ 此員工免初考**")
+                                else:
+                                    st.warning(f"**👮‍♂️ 初考評語**\n\n{record.get('初考評語', '無')}\n\n(簽名: {record.get('初考主管', '')})")
+                            with c3:
+                                st.error(f"**👩‍⚕️ 覆考評語**\n\n{record.get('覆考評語', '無')}\n\n(簽名: {record.get('覆考主管', '')})")
+
+                            st.markdown("---")
+                            
+                            real_self, s_max = calculate_dynamic_score(record, '-自評', '-自評')
+                            real_prim, p_max = calculate_dynamic_score(record, '-初考', '-自評')
+                            real_sec, sec_max = calculate_dynamic_score(record, '-覆考', '-自評')
+                            real_final, f_max = calculate_dynamic_score(record, '-最終', '-自評')
+
+                            col1, col2, col3, col4 = st.columns(4)
+                            col1.metric("自評總分", f"{real_self} / {s_max}")
+                            
+                            if record.get("初考組別", "") == "免初考":
+                                col2.metric("初考總分", "免初考")
+                            else:
+                                col2.metric("初考總分", f"{real_prim} / {p_max}")
                                 
-                                boss_scores = render_assessment_in_form(
-                                    "boss", 
-                                    st.session_state.key_counter_boss,
-                                    record=record,
-                                    readonly_stages=stages_to_show,
-                                    is_self_eval=False,
-                                    default_scores=avg_defaults
+                            col3.metric("覆考總分", f"{real_sec} / {sec_max}")
+                            
+                            if view_mode == "歷史已完成案件":
+                                col4.metric("🏆 最終總分", f"{real_final} / {f_max}")
+                                st.success(f"📌 最終建議：{record.get('最終建議', '')}")
+                                st.success(f"🏅 最終考績：{record.get('最終考績', '未評定')}")
+                                
+                                csv = pending_df.to_csv(index=False).encode('utf-8-sig')
+                                st.download_button(
+                                    label="📥 下載本頁搜尋結果 (Excel/CSV)",
+                                    data=csv,
+                                    file_name=f"assessment_export_{date.today()}.csv",
+                                    mime="text/csv",
                                 )
-                                c1, c2 = st.columns(2)
-                                with c1: final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
-                                # [修改] 考績預設選第 2 個 (A)
-                                with c2: final_grade = st.selectbox("🏅 最終考績", ["S", "A+", "A", "A-", "B"], index=2)
-                                submitted_boss = st.form_submit_button("🏆 核決並歸檔", type="primary")
-                            
-                            if submitted_boss:
-                                with st.spinner("正在歸檔..."):
-                                    load_data_from_sheet.clear()
-                                    row_idx, debug_df = find_row_index(data, target_name, target_date_str)
-                                    if row_idx:
-                                        headers = list(data[0].keys())
-                                        clean_headers = [h.strip() for h in headers]
-                                        updates = []
-                                        try:
-                                            if "最終考績" not in clean_headers:
-                                                st.toast("正在新增【最終考績】欄位...", icon="🔧")
-                                                worksheet.update_cell(1, len(clean_headers) + 1, "最終考績")
-                                                clean_headers.append("最終考績")
-                                                time.sleep(1)
+                                
+                                st.markdown("### 詳細成績單")
+                                items = get_assessment_items()
+                                detail_rows = []
+                                for item in items:
+                                    i_name = item["考核項目"]
+                                    prim_score = "免初考" if record.get("初考組別", "") == "免初考" else str(record.get(f"{i_name}-初考", "-"))
+                                    
+                                    detail_rows.append({
+                                        "考核項目": i_name,
+                                        "自評": str(record.get(f"{i_name}-自評", "-")),
+                                        "初考": prim_score,
+                                        "覆考": str(record.get(f"{i_name}-覆考", "-")),
+                                        "最終": str(record.get(f"{i_name}-最終", "-")),
+                                    })
+                                st.table(pd.DataFrame(detail_rows))
+                            else: 
+                                st.warning("請填寫最終成績與考績以完成考核。")
+                                
+                                with st.form(key=f"form_boss_{st.session_state.key_counter_boss}"):
+                                    stages_to_show = ["-自評"]
+                                    if record.get("初考組別", "") != "免初考":
+                                        stages_to_show.append("-初考")
+                                    stages_to_show.append("-覆考")
 
-                                            status_col = clean_headers.index("目前狀態") + 1
-                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["已完成"]]})
-                                            
-                                            total_score, max_score = safe_sum_scores_from_dict(boss_scores)
-                                            score_sum_col = clean_headers.index("最終總分") + 1
-                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
+                                    avg_defaults = calculate_average_defaults(record)
+                                    
+                                    boss_scores = render_assessment_in_form(
+                                        "boss", 
+                                        st.session_state.key_counter_boss,
+                                        record=record,
+                                        readonly_stages=stages_to_show,
+                                        is_self_eval=False,
+                                        default_scores=avg_defaults
+                                    )
+                                    c1, c2 = st.columns(2)
+                                    with c1: final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
+                                    # [修改] 預設為 A (index 2)
+                                    with c2: final_grade = st.selectbox("🏅 最終考績", ["S", "A+", "A", "A-", "B"], index=2)
+                                    submitted_boss = st.form_submit_button("🏆 核決並歸檔", type="primary")
+                                
+                                if submitted_boss:
+                                    with st.spinner("正在歸檔..."):
+                                        load_data_from_sheet.clear()
+                                        row_idx, debug_df = find_row_index(data, target_name, target_date_str)
+                                        if row_idx:
+                                            headers = list(data[0].keys())
+                                            clean_headers = [h.strip() for h in headers]
+                                            updates = []
+                                            try:
+                                                if "最終考績" not in clean_headers:
+                                                    st.toast("正在新增【最終考績】欄位...", icon="🔧")
+                                                    worksheet.update_cell(1, len(clean_headers) + 1, "最終考績")
+                                                    clean_headers.append("最終考績")
+                                                    time.sleep(1)
 
-                                            suggest_col = clean_headers.index("最終建議") + 1
-                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, suggest_col), "values": [[final_action]]})
-                                            
-                                            grade_col = clean_headers.index("最終考績") + 1
-                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, grade_col), "values": [[final_grade]]})
+                                                status_col = clean_headers.index("目前狀態") + 1
+                                                updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["已完成"]]})
+                                                
+                                                total_score, max_score = safe_sum_scores_from_dict(boss_scores)
+                                                score_sum_col = clean_headers.index("最終總分") + 1
+                                                updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
 
-                                            for item_name, score in boss_scores.items():
-                                                col_name = f"{item_name}-最終"
-                                                if col_name in clean_headers:
-                                                    col_idx = clean_headers.index(col_name) + 1
-                                                    updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[score]]})
-                                            
-                                            safe_batch_update(worksheet, updates)
-                                            st.session_state.key_counter_boss += 1
-                                            st.balloons()
-                                            st.success("🎉 考核流程圓滿結束！")
-                                            
-                                            # [新增] 強制捲動到頂部 (Scroll to top)
-                                            components.html(
-                                                """
-                                                <script>
-                                                var body = window.parent.document.querySelector(".main");
-                                                body.scrollTop = 0;
-                                                </script>
-                                                """,
-                                                height=0
-                                            )
-                                            
-                                            time.sleep(1.5)
-                                            st.rerun()
-                                        except ValueError as e:
-                                            st.error(f"欄位錯誤: {e}")
-                                    else:
-                                        st.error("❌ 找不到原始資料列。")
+                                                suggest_col = clean_headers.index("最終建議") + 1
+                                                updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, suggest_col), "values": [[final_action]]})
+                                                
+                                                grade_col = clean_headers.index("最終考績") + 1
+                                                updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, grade_col), "values": [[final_grade]]})
+
+                                                for item_name, score in boss_scores.items():
+                                                    col_name = f"{item_name}-最終"
+                                                    if col_name in clean_headers:
+                                                        col_idx = clean_headers.index(col_name) + 1
+                                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[score]]})
+                                                
+                                                safe_batch_update(worksheet, updates)
+                                                st.session_state.key_counter_boss += 1
+                                                st.balloons()
+                                                st.success("🎉 考核流程圓滿結束！")
+                                                
+                                                # [修改] 強力置頂腳本
+                                                components.html(
+                                                    """
+                                                    <script>
+                                                        try {
+                                                            window.parent.document.querySelector('section.main').scrollTo(0, 0);
+                                                        } catch (e) {}
+                                                        try {
+                                                            window.parent.window.scrollTo(0,0);
+                                                        } catch (e) {}
+                                                    </script>
+                                                    """,
+                                                    height=0
+                                                )
+                                                
+                                                time.sleep(1.5)
+                                                st.rerun()
+                                            except ValueError as e:
+                                                st.error(f"欄位錯誤: {e}")
+                                        else:
+                                            st.error("❌ 找不到原始資料列。")
 
 if __name__ == "__main__":
     main()
