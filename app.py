@@ -126,22 +126,19 @@ def find_row_index(all_values, name, assess_date):
         return match[0] + 2, df 
     return None, df
 
-# --- 5. [資安] 隱形防護網 ---
+# --- 5. 資安防護網 ---
 def add_security_watermark(username):
     timestamp = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
     css = f"""
     <style>
-    /* 禁止選取文字 (防複製) */
     div.stApp {{
         user-select: none; 
         -webkit-user-select: none;
     }}
-    /* 輸入框例外 */
     input, textarea {{
         user-select: text !important;
         -webkit-user-select: text !important;
     }}
-    /* 右下角浮水印 */
     .watermark {{
         position: fixed;
         bottom: 10px;
@@ -153,11 +150,9 @@ def add_security_watermark(username):
         font-family: sans-serif;
     }}
     </style>
-    
     <script>
     document.addEventListener('contextmenu', event => event.preventDefault());
     </script>
-    
     <div class="watermark">日沐‧勤美‧小日子 內部機密 | {username} | {timestamp} | 禁止外流</div>
     """
     st.markdown(css, unsafe_allow_html=True)
@@ -185,7 +180,7 @@ def init_session_state():
             st.session_state[k] = 0 if "counter" in k else False
 
 def show_guidelines():
-    """依據 PDF 內容顯示評分標準與職能定義"""
+    """[ cite: 5, 6, 13 ]"""
     with st.expander("📖 查看評分標準與職能定義說明", expanded=False):
         tab_a, tab_b = st.tabs(["📊 分數級距定義", "📝 職能定義說明"])
         with tab_a:
@@ -201,11 +196,9 @@ def show_guidelines():
             st.markdown("""
             ### 1. 專業技能
             * **跟診/櫃台**：具備職務所需的各項專業知識與技能，能充份滿足工作需求。
-            
             ### 2. 核心職能
             * **勤務配合**：遵循規範，維持良好的出勤紀律，並能在工作中展現積極的態度與持續進取的企圖心。
             * **人際協作**：與同儕保持良好互動，尊重並服從上下級指示，具備良好的團隊合作能力。
-            
             ### 3. 行政職能
             * **基礎行政**：具備確保診所日常營運穩定的專業能力，能完成行政與支援工作，並有效執行主管交辦任務。
             * **應變與支援**：同時具備高度應變與問題解決能力，能即時處理突發需求，主動支援並展現團隊合作精神。
@@ -214,7 +207,6 @@ def show_guidelines():
             """)
 
 def get_assessment_items():
-    """依據 PDF 內容填入完整說明"""
     return [
         {"類別": "專業技能", "考核項目": "跟診技能", "說明": "跟診：器械與診間準備，依照SOP操作，器械準備熟練，無重大缺失；耗材不足能立即補充。"},
         {"類別": "專業技能", "考核項目": "櫃台技能", "說明": "櫃台：準確完成約診、報表與櫃檯行政作業，確保資料正確無誤。"},
@@ -319,29 +311,31 @@ def main():
             add_security_watermark("員工考核中")
             show_guidelines()
             
-            with st.form(key=f"form_self_{st.session_state.key_counter_self}"):
-                col1, col2, col3, col4 = st.columns(4)
-                with col1: 
-                    name = st.text_input("姓名", placeholder="請輸入姓名")
-                
-                # [關鍵修改] 宣告變數，確保後面邏輯正確
-                primary_group = None 
-                
-                with col2: 
-                    # 職務選擇
-                    role = st.selectbox("您的職務身份", ["一般員工", "主管", "護理長"], key="role_select")
-                
-                with col3:
-                    # [關鍵修改] 根據身份顯示/隱藏上呈選單
-                    if role == "一般員工":
-                        primary_group = st.selectbox("上呈初考主管", ["跟診主管", "櫃檯主管"], help="請選擇負責考核您的直屬主管")
-                    else:
-                        st.write("") # 排版用空格
-                        st.info("✅ 此職務免填初考主管")
-                
-                with col4: 
-                    assess_date = st.date_input("評量日期", date.today())
+            # --- 【關鍵修改】基本資料區（移出表單，解決連動問題） ---
+            col1, col2, col3, col4 = st.columns(4)
+            with col1: 
+                # 姓名：使用計數器 key 以便重置
+                name = st.text_input("姓名", placeholder="請輸入姓名", key=f"name_{st.session_state.key_counter_self}")
+            
+            with col2: 
+                # 職務：這會即時觸發 Rerun
+                role = st.selectbox("您的職務身份", ["一般員工", "主管", "護理長"], key=f"role_{st.session_state.key_counter_self}")
+            
+            with col3:
+                # 邏輯判斷區：因為不在 form 裡，這裡會即時反應
+                primary_group = None
+                if role == "一般員工":
+                    primary_group = st.selectbox("上呈初考主管", ["跟診主管", "櫃檯主管"], help="請選擇負責考核您的直屬主管", key=f"pg_{st.session_state.key_counter_self}")
+                else:
+                    st.write("") 
+                    st.info("✅ 此職務免填初考主管")
+            
+            with col4: 
+                assess_date = st.date_input("評量日期", date.today(), key=f"date_{st.session_state.key_counter_self}")
 
+            # --- 題目區（保留在表單內，避免跳動） ---
+            with st.form(key=f"form_self_{st.session_state.key_counter_self}"):
+                
                 # 流程邏輯
                 if role == "一般員工": 
                     next_status = "待初考"
@@ -352,6 +346,8 @@ def main():
 
                 user_scores = render_assessment_in_form("self", st.session_state.key_counter_self, is_self_eval=True)
                 self_comment = st.text_area("自評文字", placeholder="請輸入...")
+                
+                # 送出按鈕
                 submitted = st.form_submit_button("🚀 送出自評", type="primary")
 
             if submitted:
@@ -362,7 +358,6 @@ def main():
                         load_data_from_sheet.clear()
                         total_score, max_score = safe_sum_scores_from_dict(user_scores)
                         
-                        # 處理組別邏輯
                         if primary_group:
                             group_val = "跟診" if primary_group == "跟診主管" else "櫃檯"
                         else:
@@ -691,7 +686,7 @@ def main():
         else:
             st.header("🏆 老闆核決區")
             add_security_watermark("老闆核決中")
-            show_guidelines()
+            show_guidelines() 
             pwd3 = st.text_input("🔒 老闆密碼", type="password", key="pwd_boss")
 
             if pwd3 == "8888": 
