@@ -126,7 +126,51 @@ def find_row_index(all_values, name, assess_date):
         return match[0] + 2, df 
     return None, df
 
-# --- 5. 資安防護網 ---
+# --- 5. [新功能] 計算平均值作為預設值 ---
+def calculate_average_defaults(record):
+    """
+    根據員工身份，自動計算過往所有關卡的平均分，作為老闆評分的預設值。
+    """
+    items = get_assessment_items()
+    defaults = {}
+    
+    # 1. 判斷哪些是有效關卡
+    role = record.get('職務身份', '一般員工')
+    group = record.get('初考組別', '')
+    
+    stages = ['-自評']
+    if role == '一般員工':
+        if group != '免初考':
+            stages.append('-初考')
+        stages.append('-覆考')
+    elif role == '主管':
+        stages.append('-覆考')
+    # 護理長只有自評
+    
+    # 2. 計算每個項目的平均分
+    for item in items:
+        name = item['考核項目']
+        scores = []
+        for s in stages:
+            val = record.get(f"{name}{s}", 0)
+            if str(val) != 'N/A':
+                try:
+                    scores.append(float(val))
+                except:
+                    pass
+        
+        if scores:
+            # 四捨五入取整數
+            avg = int(sum(scores) / len(scores) + 0.5)
+            # 確保在 0-10 範圍內
+            avg = max(0, min(10, avg))
+            defaults[name] = avg
+        else:
+            defaults[name] = 0
+            
+    return defaults
+
+# --- 6. 資安防護網 ---
 def add_security_watermark(username):
     timestamp = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
     css = f"""
@@ -180,7 +224,6 @@ def init_session_state():
             st.session_state[k] = 0 if "counter" in k else False
 
 def show_guidelines():
-    """[ cite: 5, 6, 13 ]"""
     with st.expander("📖 查看評分標準與職能定義說明", expanded=False):
         tab_a, tab_b = st.tabs(["📊 分數級距定義", "📝 職能定義說明"])
         with tab_a:
@@ -225,7 +268,11 @@ def get_assessment_items():
 SCORE_OPTIONS_FULL = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "N/A"]
 SCORE_OPTIONS_NUM = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
-def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=None, is_self_eval=False):
+# --- 7. UI 渲染函數 (含預設值邏輯) ---
+def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=None, is_self_eval=False, default_scores=None):
+    """
+    default_scores: 字典 {項目名稱: 預設分數}，用於老闆核決時帶入平均分
+    """
     items = get_assessment_items()
     user_scores = {}
     
@@ -252,16 +299,26 @@ def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=N
                 disabled = False
                 current_index = 0
                 
+                # --- N/A 連動與預設值邏輯 ---
                 if not is_self_eval and record is not None:
                     self_score = record.get(f"{item['考核項目']}-自評", 0)
+                    
                     if str(self_score) == "N/A":
+                        # 情境 A: 自評是 N/A -> 強制鎖定
                         options = ["N/A"]
                         disabled = True
                         current_index = 0
                     else:
+                        # 情境 B: 自評有分數 -> 只能選數字
                         options = SCORE_OPTIONS_NUM
                         disabled = False
-                        current_index = 0
+                        current_index = 0 # 預設 0
+                        
+                        # [新功能] 如果有傳入平均分作為預設值，且該項目非 N/A
+                        if default_scores and item['考核項目'] in default_scores:
+                            default_val = default_scores[item['考核項目']]
+                            if default_val in options:
+                                current_index = options.index(default_val)
                 
                 score = st.selectbox(
                     f"評分 ({item['考核項目']})", 
@@ -311,18 +368,14 @@ def main():
             add_security_watermark("員工考核中")
             show_guidelines()
             
-            # --- 【關鍵修改】基本資料區（移出表單，解決連動問題） ---
             col1, col2, col3, col4 = st.columns(4)
             with col1: 
-                # 姓名：使用計數器 key 以便重置
                 name = st.text_input("姓名", placeholder="請輸入姓名", key=f"name_{st.session_state.key_counter_self}")
             
             with col2: 
-                # 職務：這會即時觸發 Rerun
                 role = st.selectbox("您的職務身份", ["一般員工", "主管", "護理長"], key=f"role_{st.session_state.key_counter_self}")
             
             with col3:
-                # 邏輯判斷區：因為不在 form 裡，這裡會即時反應
                 primary_group = None
                 if role == "一般員工":
                     primary_group = st.selectbox("上呈初考主管", ["跟診主管", "櫃檯主管"], help="請選擇負責考核您的直屬主管", key=f"pg_{st.session_state.key_counter_self}")
@@ -333,10 +386,7 @@ def main():
             with col4: 
                 assess_date = st.date_input("評量日期", date.today(), key=f"date_{st.session_state.key_counter_self}")
 
-            # --- 題目區（保留在表單內，避免跳動） ---
             with st.form(key=f"form_self_{st.session_state.key_counter_self}"):
-                
-                # 流程邏輯
                 if role == "一般員工": 
                     next_status = "待初考"
                 elif role == "主管": 
@@ -347,7 +397,6 @@ def main():
                 user_scores = render_assessment_in_form("self", st.session_state.key_counter_self, is_self_eval=True)
                 self_comment = st.text_area("自評文字", placeholder="請輸入...")
                 
-                # 送出按鈕
                 submitted = st.form_submit_button("🚀 送出自評", type="primary")
 
             if submitted:
@@ -383,7 +432,6 @@ def main():
                             data_to_save[f"{item_name}-最終"] = 0
 
                         save_data_using_headers(worksheet, data_to_save)
-                        
                         st.session_state.key_counter_self += 1
                         st.session_state.submitted_self = True
                         st.rerun()
@@ -447,7 +495,6 @@ def main():
                                 with st.spinner("更新資料庫中..."):
                                     load_data_from_sheet.clear()
                                     row_idx, debug_df = find_row_index(data, target_name, target_date)
-                                    
                                     if row_idx:
                                         headers = list(data[0].keys())
                                         clean_headers = [h.strip() for h in headers]
@@ -755,12 +802,16 @@ def main():
                             st.warning("請填寫最終成績與考績以完成考核。")
                             
                             with st.form(key=f"form_boss_{st.session_state.key_counter_boss}"):
+                                # [新功能] 計算預設平均值
+                                avg_defaults = calculate_average_defaults(record)
+                                
                                 boss_scores = render_assessment_in_form(
                                     "boss", 
                                     st.session_state.key_counter_boss,
                                     record=record,
                                     readonly_stages=["-自評", "-初考", "-覆考"],
-                                    is_self_eval=False
+                                    is_self_eval=False,
+                                    default_scores=avg_defaults # 傳入預設值
                                 )
                                 c1, c2 = st.columns(2)
                                 with c1: final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
