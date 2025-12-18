@@ -301,7 +301,6 @@ def render_assessment_in_form(prefix, key_suffix, record=None, readonly_stages=N
                         disabled = False
                         current_index = 0 
                         
-                        # [V20新功能] 帶入平均值作為預設值
                         if default_scores and item['考核項目'] in default_scores:
                             default_val = default_scores[item['考核項目']]
                             if default_val in options:
@@ -716,7 +715,6 @@ def main():
     # Tab 5: 老闆最終核決
     # ==========================================
     with tabs[4]:
-        # [修改] 老闆 Tab 不顯示完成遮蔽畫面，直接留在主畫面
         st.header("🏆 老闆核決區")
         add_security_watermark("老闆核決中")
         show_guidelines() 
@@ -736,118 +734,160 @@ def main():
                 if pending_df.empty:
                     st.info(f"🎉 目前沒有 {view_mode}。")
                 else:
-                    target_options = [f"{row['姓名']} ({row['日期']})" for i, row in pending_df.iterrows()]
-                    selected_target = st.selectbox("請選擇對象", target_options, key="sel_boss")
-                    
-                    target_name = selected_target.split(" (")[0]
-                    target_date = selected_target.split(" (")[1].replace(")", "")
-                    record = pending_df[(pending_df["姓名"] == target_name) & (pending_df["日期"] == target_date)].iloc[0]
+                    # [V23 Feature] 1. 日期處理 & 排序
+                    pending_df["dt_obj"] = pd.to_datetime(pending_df["日期"], errors='coerce').dt.date
+                    pending_df = pending_df.sort_values(by="dt_obj", ascending=False) # 最新在最上
 
-                    st.markdown("---")
-                    
-                    st.markdown("### 📝 各階段評語紀錄")
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        st.info(f"**🗣️ 員工自評**\n\n{record.get('自評文字', '無')}")
-                    with c2:
-                        st.warning(f"**👮‍♂️ 初考評語**\n\n{record.get('初考評語', '無')}\n\n(簽名: {record.get('初考主管', '')})")
-                    with c3:
-                        st.error(f"**👩‍⚕️ 覆考評語**\n\n{record.get('覆考評語', '無')}\n\n(簽名: {record.get('覆考主管', '')})")
-
-                    st.markdown("---")
-                    
-                    real_self, s_max = calculate_dynamic_score(record, '-自評', '-自評')
-                    real_prim, p_max = calculate_dynamic_score(record, '-初考', '-自評')
-                    real_sec, sec_max = calculate_dynamic_score(record, '-覆考', '-自評')
-                    real_final, f_max = calculate_dynamic_score(record, '-最終', '-自評')
-
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("自評總分", f"{real_self} / {s_max}")
-                    col2.metric("初考總分", f"{real_prim} / {p_max}")
-                    col3.metric("覆考總分", f"{real_sec} / {sec_max}")
-                    
-                    if view_mode == "歷史已完成案件":
-                        col4.metric("🏆 最終總分", f"{real_final} / {f_max}")
-                        st.success(f"📌 最終建議：{record.get('最終建議', '')}")
-                        st.success(f"🏅 最終考績：{record.get('最終考績', '未評定')}")
+                    # [V23 Feature] 2. 日期範圍篩選
+                    # 避免全空時報錯
+                    if not pending_df["dt_obj"].dropna().empty:
+                        min_date = pending_df["dt_obj"].min()
+                        max_date = pending_df["dt_obj"].max()
                         
-                        st.markdown("### 詳細成績單")
-                        items = get_assessment_items()
-                        detail_rows = []
-                        for item in items:
-                            i_name = item["考核項目"]
-                            detail_rows.append({
-                                "考核項目": i_name,
-                                "自評": str(record.get(f"{i_name}-自評", "-")),
-                                "初考": str(record.get(f"{i_name}-初考", "-")),
-                                "覆考": str(record.get(f"{i_name}-覆考", "-")),
-                                "最終": str(record.get(f"{i_name}-最終", "-")),
-                            })
-                        st.table(pd.DataFrame(detail_rows))
-                    else: 
-                        st.warning("請填寫最終成績與考績以完成考核。")
+                        st.markdown("### 🔍 篩選與選擇")
+                        c1, c2 = st.columns([1, 2])
+                        with c1:
+                            # 日期篩選器
+                            date_range = st.date_input("📅 篩選日期範圍", [min_date, max_date])
                         
-                        with st.form(key=f"form_boss_{st.session_state.key_counter_boss}"):
-                            # 帶入平均值作為預設值
-                            avg_defaults = calculate_average_defaults(record)
+                        # 只有當選了兩個日期才進行篩選
+                        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+                            start_d, end_d = date_range
+                            pending_df = pending_df[
+                                (pending_df["dt_obj"] >= start_d) & 
+                                (pending_df["dt_obj"] <= end_d)
+                            ]
+                    
+                    if pending_df.empty:
+                        st.warning("⚠️ 此日期範圍內無資料。")
+                    else:
+                        target_options = [f"{row['姓名']} ({row['日期']})" for i, row in pending_df.iterrows()]
+                        selected_target = st.selectbox("請選擇對象", target_options, key="sel_boss")
+                        
+                        # 解析選擇的對象 (姓名+日期)
+                        target_name = selected_target.split(" (")[0]
+                        target_date_str = selected_target.split(" (")[1].replace(")", "")
+                        
+                        # 重新抓取該筆資料 (因為 pending_df 已經被 filter 過，直接用比較安全)
+                        record = pending_df[(pending_df["姓名"] == target_name) & (pending_df["日期"] == target_date_str)].iloc[0]
+
+                        st.markdown("---")
+                        
+                        st.markdown("### 📝 各階段評語紀錄")
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.info(f"**🗣️ 員工自評**\n\n{record.get('自評文字', '無')}")
+                        with c2:
+                            if record.get("初考組別", "") == "免初考":
+                                st.warning("**⚠️ 此員工免初考**")
+                            else:
+                                st.warning(f"**👮‍♂️ 初考評語**\n\n{record.get('初考評語', '無')}\n\n(簽名: {record.get('初考主管', '')})")
+                        with c3:
+                            st.error(f"**👩‍⚕️ 覆考評語**\n\n{record.get('覆考評語', '無')}\n\n(簽名: {record.get('覆考主管', '')})")
+
+                        st.markdown("---")
+                        
+                        real_self, s_max = calculate_dynamic_score(record, '-自評', '-自評')
+                        real_prim, p_max = calculate_dynamic_score(record, '-初考', '-自評')
+                        real_sec, sec_max = calculate_dynamic_score(record, '-覆考', '-自評')
+                        real_final, f_max = calculate_dynamic_score(record, '-最終', '-自評')
+
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("自評總分", f"{real_self} / {s_max}")
+                        
+                        if record.get("初考組別", "") == "免初考":
+                            col2.metric("初考總分", "免初考")
+                        else:
+                            col2.metric("初考總分", f"{real_prim} / {p_max}")
                             
-                            boss_scores = render_assessment_in_form(
-                                "boss", 
-                                st.session_state.key_counter_boss,
-                                record=record,
-                                readonly_stages=["-自評", "-初考", "-覆考"],
-                                is_self_eval=False,
-                                default_scores=avg_defaults
-                            )
-                            c1, c2 = st.columns(2)
-                            with c1: final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
-                            with c2: final_grade = st.selectbox("🏅 最終考績", ["S", "A+", "A", "A-", "B"])
-                            submitted_boss = st.form_submit_button("🏆 核決並歸檔", type="primary")
+                        col3.metric("覆考總分", f"{real_sec} / {sec_max}")
                         
-                        if submitted_boss:
-                            with st.spinner("正在歸檔..."):
-                                load_data_from_sheet.clear()
-                                row_idx, debug_df = find_row_index(data, target_name, target_date)
-                                if row_idx:
-                                    headers = list(data[0].keys())
-                                    clean_headers = [h.strip() for h in headers]
-                                    updates = []
-                                    try:
-                                        if "最終考績" not in clean_headers:
-                                            st.toast("正在新增【最終考績】欄位...", icon="🔧")
-                                            worksheet.update_cell(1, len(clean_headers) + 1, "最終考績")
-                                            clean_headers.append("最終考績")
-                                            time.sleep(1)
+                        if view_mode == "歷史已完成案件":
+                            col4.metric("🏆 最終總分", f"{real_final} / {f_max}")
+                            st.success(f"📌 最終建議：{record.get('最終建議', '')}")
+                            st.success(f"🏅 最終考績：{record.get('最終考績', '未評定')}")
+                            
+                            st.markdown("### 詳細成績單")
+                            items = get_assessment_items()
+                            detail_rows = []
+                            for item in items:
+                                i_name = item["考核項目"]
+                                prim_score = "免初考" if record.get("初考組別", "") == "免初考" else str(record.get(f"{i_name}-初考", "-"))
+                                
+                                detail_rows.append({
+                                    "考核項目": i_name,
+                                    "自評": str(record.get(f"{i_name}-自評", "-")),
+                                    "初考": prim_score,
+                                    "覆考": str(record.get(f"{i_name}-覆考", "-")),
+                                    "最終": str(record.get(f"{i_name}-最終", "-")),
+                                })
+                            st.table(pd.DataFrame(detail_rows))
+                        else: 
+                            st.warning("請填寫最終成績與考績以完成考核。")
+                            
+                            with st.form(key=f"form_boss_{st.session_state.key_counter_boss}"):
+                                stages_to_show = ["-自評"]
+                                if record.get("初考組別", "") != "免初考":
+                                    stages_to_show.append("-初考")
+                                stages_to_show.append("-覆考")
 
-                                        status_col = clean_headers.index("目前狀態") + 1
-                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["已完成"]]})
-                                        
-                                        total_score, max_score = safe_sum_scores_from_dict(boss_scores)
-                                        score_sum_col = clean_headers.index("最終總分") + 1
-                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
+                                avg_defaults = calculate_average_defaults(record)
+                                
+                                boss_scores = render_assessment_in_form(
+                                    "boss", 
+                                    st.session_state.key_counter_boss,
+                                    record=record,
+                                    readonly_stages=stages_to_show,
+                                    is_self_eval=False,
+                                    default_scores=avg_defaults
+                                )
+                                c1, c2 = st.columns(2)
+                                with c1: final_action = st.selectbox("最終建議", ["通過", "需觀察", "需輔導", "工作調整", "其他"])
+                                with c2: final_grade = st.selectbox("🏅 最終考績", ["S", "A+", "A", "A-", "B"])
+                                submitted_boss = st.form_submit_button("🏆 核決並歸檔", type="primary")
+                            
+                            if submitted_boss:
+                                with st.spinner("正在歸檔..."):
+                                    load_data_from_sheet.clear()
+                                    row_idx, debug_df = find_row_index(data, target_name, target_date_str)
+                                    if row_idx:
+                                        headers = list(data[0].keys())
+                                        clean_headers = [h.strip() for h in headers]
+                                        updates = []
+                                        try:
+                                            if "最終考績" not in clean_headers:
+                                                st.toast("正在新增【最終考績】欄位...", icon="🔧")
+                                                worksheet.update_cell(1, len(clean_headers) + 1, "最終考績")
+                                                clean_headers.append("最終考績")
+                                                time.sleep(1)
 
-                                        suggest_col = clean_headers.index("最終建議") + 1
-                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, suggest_col), "values": [[final_action]]})
-                                        
-                                        grade_col = clean_headers.index("最終考績") + 1
-                                        updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, grade_col), "values": [[final_grade]]})
+                                            status_col = clean_headers.index("目前狀態") + 1
+                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, status_col), "values": [["已完成"]]})
+                                            
+                                            total_score, max_score = safe_sum_scores_from_dict(boss_scores)
+                                            score_sum_col = clean_headers.index("最終總分") + 1
+                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, score_sum_col), "values": [[total_score]]})
 
-                                        for item_name, score in boss_scores.items():
-                                            col_name = f"{item_name}-最終"
-                                            if col_name in clean_headers:
-                                                col_idx = clean_headers.index(col_name) + 1
-                                                updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[score]]})
-                                        
-                                        safe_batch_update(worksheet, updates)
-                                        st.session_state.key_counter_boss += 1
-                                        st.balloons()
-                                        st.success("🎉 考核流程圓滿結束！")
-                                        time.sleep(1.5)
-                                        st.rerun()
-                                    except ValueError as e:
-                                        st.error(f"欄位錯誤: {e}")
-                                else:
-                                    st.error("❌ 找不到原始資料列。")
+                                            suggest_col = clean_headers.index("最終建議") + 1
+                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, suggest_col), "values": [[final_action]]})
+                                            
+                                            grade_col = clean_headers.index("最終考績") + 1
+                                            updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, grade_col), "values": [[final_grade]]})
+
+                                            for item_name, score in boss_scores.items():
+                                                col_name = f"{item_name}-最終"
+                                                if col_name in clean_headers:
+                                                    col_idx = clean_headers.index(col_name) + 1
+                                                    updates.append({"range": gspread.utils.rowcol_to_a1(row_idx, col_idx), "values": [[score]]})
+                                            
+                                            safe_batch_update(worksheet, updates)
+                                            st.session_state.key_counter_boss += 1
+                                            st.session_state.submitted_boss = True
+                                            st.rerun()
+                                        except ValueError as e:
+                                            st.error(f"欄位錯誤: {e}")
+                                    else:
+                                        st.error("❌ 找不到原始資料列。")
 
 if __name__ == "__main__":
     main()
