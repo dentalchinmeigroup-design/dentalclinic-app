@@ -126,21 +126,17 @@ def find_row_index(all_values, name, assess_date):
         return match[0] + 2, df 
     return None, df
 
-# --- 5. [優化] 資安防護 (美觀版) ---
+# --- 5. [資安] 隱形防護網 ---
 def add_security_watermark(username):
-    """
-    1. 禁止文字選取 (防止複製)
-    2. 右下角顯示乾淨的浮水印
-    """
     timestamp = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
     css = f"""
     <style>
-    /* 禁止選取文字，防止複製 */
+    /* 禁止選取文字 (防複製) */
     div.stApp {{
         user-select: none; 
         -webkit-user-select: none;
     }}
-    /* 輸入框例外，不然無法打字 */
+    /* 輸入框例外 */
     input, textarea {{
         user-select: text !important;
         -webkit-user-select: text !important;
@@ -150,26 +146,28 @@ def add_security_watermark(username):
         position: fixed;
         bottom: 10px;
         right: 10px;
-        font-size: 14px;
-        color: rgba(150, 150, 150, 0.5);
+        font-size: 12px;
+        color: rgba(150, 150, 150, 0.4);
         z-index: 9999;
         pointer-events: none;
         font-family: sans-serif;
     }}
     </style>
-    <div class="watermark">機密考核資料 嚴禁外流 | {username} | {timestamp}</div>
+    
+    <script>
+    // 嘗試禁止右鍵 (部分瀏覽器有效)
+    document.addEventListener('contextmenu', event => event.preventDefault());
+    </script>
+    
+    <div class="watermark">日沐‧勤美‧小日子 內部機密 | {username} | {timestamp} | 禁止外流</div>
     """
     st.markdown(css, unsafe_allow_html=True)
 
-# --- [修正] 增加 unique_key 參數，解決按鈕衝突 ---
 def show_completion_screen(title, message, unique_key):
-    """送出後的遮蔽畫面"""
     st.success(f"✅ {title}")
     st.markdown(f"### {message}")
     st.markdown("---")
     st.info("💡 為了資訊安全，考核內容已隱藏。如需修改或查詢，請聯繫管理單位。")
-    
-    # 這裡加上 key=unique_key，保證每個分頁的按鈕 ID 都不一樣
     if st.button("🔄 返回首頁 / 填寫下一筆", key=unique_key):
         for key in list(st.session_state.keys()):
             if key.startswith("submitted_"):
@@ -186,6 +184,35 @@ def init_session_state():
     for k in keys:
         if k not in st.session_state:
             st.session_state[k] = 0 if "counter" in k else False
+
+def show_guidelines():
+    """[ cite: 5, 6, 13 ] 依據 PDF 內容顯示評分標準與職能定義"""
+    with st.expander("📖 查看評分標準與職能定義說明", expanded=False):
+        tab_a, tab_b = st.tabs(["📊 分數級距定義", "📝 職能定義說明"])
+        with tab_a:
+            st.markdown("""
+            * **10分 (表現卓越)**：超越要求，表現卓越。
+            * **8-9分 (完全符合)**：完全符合基本要求，表現穩定。
+            * **5-7分 (部分符合)**：部分符合，但有建議改善事項。
+            * **3-4分 (不符合)**：不符合，首次列入改善追蹤。
+            * **0-2分 (多次不符合)**：多次不符合，需持續改善追蹤。
+            * **N/A (不適用)**：此項目不列入考核。
+            """)
+        with tab_b:
+            st.markdown("""
+            ### 1. 專業技能
+            * **定義**：具備職務所需的各項專業知識與技能，能充份滿足工作需求。
+            
+            ### 2. 核心職能
+            * **勤務配合**：遵循規範，維持良好的出勤紀律，並能在工作中展現積極的態度與持續進取的企圖心。
+            * **人際協作**：與同儕保持良好互動，尊重並服從上下級指示，具備良好的團隊合作能力。
+            
+            ### 3. 行政職能
+            * **基礎行政**：具備確保診所日常營運穩定的專業能力，能完成行政與支援工作，並有效執行主管交辦任務。
+            * **應變與支援**：同時具備高度應變與問題解決能力，能即時處理突發需求，主動支援並展現團隊合作精神。
+            
+            *(本考核表內容屬診所機密，嚴禁翻拍外流)*
+            """)
 
 def get_assessment_items():
     return [
@@ -279,36 +306,44 @@ def main():
     except:
         worksheet = sh.add_worksheet(title="Assessment_Data", rows=100, cols=100)
 
-    tabs = st.tabs(["1️⃣ 員工自評", "2️⃣ 初考(跟診)", "3️⃣ 初考(櫃檯)", "4️⃣ 覆考主管", "5️⃣ 老闆核決"])
+    tabs = st.tabs(["1️⃣ 員工自評", "2️⃣ 初考(跟診)", "3️⃣ 初考(櫃檯)", "4️⃣ 覆考(護理長)", "5️⃣ 老闆核決"])
 
     # ==========================================
     # Tab 1: 員工自評
     # ==========================================
     with tabs[0]:
         if st.session_state.submitted_self:
-            # 這裡傳入 unique_key="btn_back_self"
-            show_completion_screen("自評已提交", "資料已傳送給您選擇的初考主管。", "btn_back_self")
+            show_completion_screen("自評已提交", "資料已傳送給下一關主管。", "btn_back_self")
         else:
             st.header("📝 員工自評區")
             add_security_watermark("員工考核中")
+            show_guidelines()
             
             with st.form(key=f"form_self_{st.session_state.key_counter_self}"):
                 col1, col2, col3, col4 = st.columns(4)
                 with col1: 
                     name = st.text_input("姓名", placeholder="請輸入姓名")
                 with col2: 
-                    role = st.selectbox("您的職務身份", ["一般員工", "初考主管 (管理者)", "覆考主管 (護理長)"])
+                    # [修改] 角色名稱更新
+                    role = st.selectbox("您的職務身份", ["一般員工", "主管", "護理長"])
                 with col3:
-                    primary_group = st.selectbox("上呈初考主管", ["跟診主管", "櫃檯主管"], help="請選擇負責考核您的直屬主管")
+                    # [修改] 只有一般員工需要選初考主管
+                    if role == "一般員工":
+                        primary_group = st.selectbox("上呈初考主管", ["跟診主管", "櫃檯主管"], help="請選擇負責考核您的直屬主管")
+                    else:
+                        primary_group = None # 主管與護理長不需此欄位
+                        st.info("(此職務免填初考主管)")
+                
                 with col4: 
                     assess_date = st.date_input("評量日期", date.today())
 
+                # [修改] 流程邏輯分流
                 if role == "一般員工": 
                     next_status = "待初考"
-                elif role == "初考主管 (管理者)": 
-                    next_status = "待覆考"
-                else: 
-                    next_status = "待核決"
+                elif role == "主管": 
+                    next_status = "待覆考" # 主管跳過初考
+                else: # 護理長
+                    next_status = "待核決" # 護理長跳過初覆考
 
                 user_scores = render_assessment_in_form("self", st.session_state.key_counter_self, is_self_eval=True)
                 self_comment = st.text_area("自評文字", placeholder="請輸入...")
@@ -321,7 +356,12 @@ def main():
                     with st.spinner("資料傳送中..."):
                         load_data_from_sheet.clear()
                         total_score, max_score = safe_sum_scores_from_dict(user_scores)
-                        group_val = "跟診" if primary_group == "跟診主管" else "櫃檯"
+                        
+                        # 處理組別
+                        if primary_group:
+                            group_val = "跟診" if primary_group == "跟診主管" else "櫃檯"
+                        else:
+                            group_val = "免初考"
 
                         data_to_save = {
                             "目前狀態": next_status,
@@ -343,6 +383,7 @@ def main():
                             data_to_save[f"{item_name}-最終"] = 0
 
                         save_data_using_headers(worksheet, data_to_save)
+                        
                         st.session_state.key_counter_self += 1
                         st.session_state.submitted_self = True
                         st.rerun()
@@ -352,11 +393,12 @@ def main():
     # ==========================================
     with tabs[1]:
         if st.session_state.submitted_clinical:
-            # 傳入 unique_key="btn_back_clin"
             show_completion_screen("初考(跟診)已完成", "案件已移交給覆考主管。", "btn_back_clin")
         else:
             st.header("🦷 初考主管審核 (跟診組)")
             add_security_watermark("跟診主管考核")
+            # 在每個主管頁面都顯示評分標準
+            show_guidelines() 
             pwd_clin = st.text_input("🔒 跟診主管密碼", type="password", key="pwd_clin")
             
             if pwd_clin == "1111": 
@@ -446,11 +488,11 @@ def main():
     # ==========================================
     with tabs[2]:
         if st.session_state.submitted_front:
-            # 傳入 unique_key="btn_back_front"
             show_completion_screen("初考(櫃檯)已完成", "案件已移交給覆考主管。", "btn_back_front")
         else:
             st.header("🖥️ 初考主管審核 (櫃檯組)")
             add_security_watermark("櫃檯主管考核")
+            show_guidelines()
             pwd_front = st.text_input("🔒 櫃檯主管密碼", type="password", key="pwd_front")
             
             if pwd_front == "3333": 
@@ -536,16 +578,16 @@ def main():
                                         st.error("❌ 找不到資料。")
 
     # ==========================================
-    # Tab 4: 覆考主管
+    # Tab 4: 覆考 (護理長)
     # ==========================================
     with tabs[3]:
         if st.session_state.submitted_sec:
-            # 傳入 unique_key="btn_back_sec"
             show_completion_screen("覆考已完成", "案件已移交給老闆核決。", "btn_back_sec")
         else:
-            st.header("👩‍⚕️ 覆考主管 (護理長) 審核區")
+            st.header("👩‍⚕️ 護理長 (覆考主管) 審核區")
             add_security_watermark("護理長考核")
-            pwd2 = st.text_input("🔒 覆考主管密碼", type="password", key="pwd_secondary")
+            show_guidelines()
+            pwd2 = st.text_input("🔒 護理長密碼", type="password", key="pwd_secondary")
 
             if pwd2 == "2222": 
                 data = load_data_from_sheet(worksheet)
@@ -564,6 +606,7 @@ def main():
                         record = pending_df[(pending_df["姓名"] == target_name) & (pending_df["日期"] == target_date)].iloc[0]
 
                         st.markdown("---")
+                        # [修改] 使用 get 方法避免 Key Error，舊資料預設為一般員工
                         user_role = record.get('職務身份', '一般員工')
                         st.subheader(f"正在審核：{target_name} ({user_role})")
                         
@@ -572,21 +615,28 @@ def main():
                         
                         c1, c2 = st.columns(2)
                         c1.info(f"**自評總分**：{real_self} / {self_max}\n\n💬 {record.get('自評文字', '')}")
-                        if real_prim > 0:
+                        
+                        # [修改] 顯示初考資訊 (如果有的話)
+                        if record.get("初考組別", "") != "免初考" and real_prim > 0:
                             c2.warning(f"**初考總分**：{real_prim} / {prim_max}\n\n💬 {record.get('初考評語', '')}\n\n👮‍♂️ 簽名：{record.get('初考主管', '')}")
                         else:
-                            c2.warning("*(無初考紀錄)*")
+                            c2.warning("*(本案件為主管職或免初考，無初考紀錄)*")
 
                         with st.form(key=f"form_sec_{st.session_state.key_counter_sec}"):
+                            # 決定要顯示哪些歷史成績
+                            stages_to_show = ["-自評"]
+                            if record.get("初考組別", "") != "免初考":
+                                stages_to_show.append("-初考")
+
                             manager_scores = render_assessment_in_form(
                                 "secondary", 
                                 st.session_state.key_counter_sec,
                                 record=record,
-                                readonly_stages=["-自評", "-初考"],
+                                readonly_stages=stages_to_show,
                                 is_self_eval=False
                             )
                             c1, c2 = st.columns(2)
-                            with c1: sec_name = st.text_input("覆考主管簽名")
+                            with c1: sec_name = st.text_input("護理長 (覆考主管) 簽名")
                             with c2: sec_comment = st.text_area("覆考評語")
                             submitted_sec = st.form_submit_button("✅ 提交覆考", type="primary")
                         
@@ -636,11 +686,11 @@ def main():
     # ==========================================
     with tabs[4]:
         if st.session_state.submitted_boss:
-            # 傳入 unique_key="btn_back_boss"
             show_completion_screen("核決已完成", "考核流程圓滿結束！", "btn_back_boss")
         else:
             st.header("🏆 老闆核決區")
             add_security_watermark("老闆核決中")
+            show_guidelines()
             pwd3 = st.text_input("🔒 老闆密碼", type="password", key="pwd_boss")
 
             if pwd3 == "8888": 
@@ -709,11 +759,17 @@ def main():
                             st.warning("請填寫最終成績與考績以完成考核。")
                             
                             with st.form(key=f"form_boss_{st.session_state.key_counter_boss}"):
+                                # 決定老闆要看哪些歷史成績
+                                stages_to_show = ["-自評"]
+                                if record.get("初考組別", "") != "免初考":
+                                    stages_to_show.append("-初考")
+                                stages_to_show.append("-覆考")
+
                                 boss_scores = render_assessment_in_form(
                                     "boss", 
                                     st.session_state.key_counter_boss,
                                     record=record,
-                                    readonly_stages=["-自評", "-初考", "-覆考"],
+                                    readonly_stages=stages_to_show,
                                     is_self_eval=False
                                 )
                                 c1, c2 = st.columns(2)
