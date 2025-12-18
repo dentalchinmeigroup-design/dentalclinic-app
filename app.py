@@ -126,47 +126,57 @@ def find_row_index(all_values, name, assess_date):
         return match[0] + 2, df 
     return None, df
 
-# --- 5. 資安與 UI 增強函數 ---
+# --- 5. [優化] 資安防護 (美觀版) ---
 def add_security_watermark(username):
     """
-    加入全螢幕浮水印與防護 CSS
+    1. 禁止文字選取 (防止複製)
+    2. 右下角顯示乾淨的浮水印
     """
-    watermark_html = f"""
+    timestamp = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+    css = f"""
     <style>
-    /* 浮水印樣式 */
+    /* 禁止選取文字，防止複製 */
+    div.stApp {{
+        user-select: none; 
+        -webkit-user-select: none;
+    }}
+    /* 輸入框例外，不然無法打字 */
+    input, textarea {{
+        user-select: text !important;
+        -webkit-user-select: text !important;
+    }}
+    /* 右下角浮水印 */
     .watermark {{
         position: fixed;
-        top: 0;
-        left: 0;
-        width: 100vw;
-        height: 100vh;
+        bottom: 10px;
+        right: 10px;
+        font-size: 14px;
+        color: rgba(150, 150, 150, 0.5);
         z-index: 9999;
         pointer-events: none;
-        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' version='1.1' height='100px' width='100px'><text transform='translate(20, 100) rotate(-45)' fill='rgba(200,200,200,0.2)' font-size='20'>{username} 嚴禁外流</text></svg>");
+        font-family: sans-serif;
     }}
-    /* 隱藏 Streamlit 選單與頁腳 */
-    #MainMenu {{visibility: hidden;}}
-    footer {{visibility: hidden;}}
     </style>
-    <div class="watermark"></div>
+    <div class="watermark">機密考核資料 嚴禁外流 | {username} | {timestamp}</div>
     """
-    st.markdown(watermark_html, unsafe_allow_html=True)
+    st.markdown(css, unsafe_allow_html=True)
 
-def show_completion_screen(title, message):
+# --- [修正] 增加 unique_key 參數，解決按鈕衝突 ---
+def show_completion_screen(title, message, unique_key):
     """送出後的遮蔽畫面"""
     st.success(f"✅ {title}")
     st.markdown(f"### {message}")
     st.markdown("---")
     st.info("💡 為了資訊安全，考核內容已隱藏。如需修改或查詢，請聯繫管理單位。")
-    if st.button("🔄 返回首頁 / 填寫下一筆"):
-        # 清除 session state 中的提交狀態，回到表單
+    
+    # 這裡加上 key=unique_key，保證每個分頁的按鈕 ID 都不一樣
+    if st.button("🔄 返回首頁 / 填寫下一筆", key=unique_key):
         for key in list(st.session_state.keys()):
             if key.startswith("submitted_"):
                 del st.session_state[key]
         st.rerun()
 
 def init_session_state():
-    # 初始化計數器與提交狀態
     keys = [
         "key_counter_self", "key_counter_clinical", "key_counter_front", 
         "key_counter_sec", "key_counter_boss",
@@ -269,7 +279,6 @@ def main():
     except:
         worksheet = sh.add_worksheet(title="Assessment_Data", rows=100, cols=100)
 
-    # 1. 員工自評, 2. 初考(跟診), 3. 初考(櫃檯), 4. 覆考, 5. 老闆
     tabs = st.tabs(["1️⃣ 員工自評", "2️⃣ 初考(跟診)", "3️⃣ 初考(櫃檯)", "4️⃣ 覆考主管", "5️⃣ 老闆核決"])
 
     # ==========================================
@@ -277,10 +286,10 @@ def main():
     # ==========================================
     with tabs[0]:
         if st.session_state.submitted_self:
-            show_completion_screen("自評已提交", "資料已傳送給您選擇的初考主管。")
+            # 這裡傳入 unique_key="btn_back_self"
+            show_completion_screen("自評已提交", "資料已傳送給您選擇的初考主管。", "btn_back_self")
         else:
             st.header("📝 員工自評區")
-            # 浮水印
             add_security_watermark("員工考核中")
             
             with st.form(key=f"form_self_{st.session_state.key_counter_self}"):
@@ -290,12 +299,10 @@ def main():
                 with col2: 
                     role = st.selectbox("您的職務身份", ["一般員工", "初考主管 (管理者)", "覆考主管 (護理長)"])
                 with col3:
-                    # 新增初考組別選擇
                     primary_group = st.selectbox("上呈初考主管", ["跟診主管", "櫃檯主管"], help="請選擇負責考核您的直屬主管")
                 with col4: 
                     assess_date = st.date_input("評量日期", date.today())
 
-                # 邏輯：一般員工 -> 待初考；主管 -> 待覆考
                 if role == "一般員工": 
                     next_status = "待初考"
                 elif role == "初考主管 (管理者)": 
@@ -314,13 +321,11 @@ def main():
                     with st.spinner("資料傳送中..."):
                         load_data_from_sheet.clear()
                         total_score, max_score = safe_sum_scores_from_dict(user_scores)
-                        
-                        # 轉換組別名稱以利儲存
                         group_val = "跟診" if primary_group == "跟診主管" else "櫃檯"
 
                         data_to_save = {
                             "目前狀態": next_status,
-                            "初考組別": group_val, # 新增欄位
+                            "初考組別": group_val,
                             "姓名": name,
                             "職務身份": role,
                             "日期": assess_date.strftime("%Y-%m-%d"),
@@ -338,9 +343,8 @@ def main():
                             data_to_save[f"{item_name}-最終"] = 0
 
                         save_data_using_headers(worksheet, data_to_save)
-                        
                         st.session_state.key_counter_self += 1
-                        st.session_state.submitted_self = True # 切換到完成畫面
+                        st.session_state.submitted_self = True
                         st.rerun()
 
     # ==========================================
@@ -348,18 +352,18 @@ def main():
     # ==========================================
     with tabs[1]:
         if st.session_state.submitted_clinical:
-            show_completion_screen("初考(跟診)已完成", "案件已移交給覆考主管。")
+            # 傳入 unique_key="btn_back_clin"
+            show_completion_screen("初考(跟診)已完成", "案件已移交給覆考主管。", "btn_back_clin")
         else:
             st.header("🦷 初考主管審核 (跟診組)")
             add_security_watermark("跟診主管考核")
             pwd_clin = st.text_input("🔒 跟診主管密碼", type="password", key="pwd_clin")
             
-            if pwd_clin == "1111": # 密碼A
+            if pwd_clin == "1111": 
                 data = load_data_from_sheet(worksheet)
                 df_all = pd.DataFrame(data)
 
                 if not df_all.empty and "目前狀態" in df_all.columns and "初考組別" in df_all.columns:
-                    # 篩選：狀態為待初考 AND 組別為跟診
                     pending_df = df_all[
                         (df_all["目前狀態"] == "待初考") & 
                         (df_all["初考組別"] == "跟診")
@@ -442,18 +446,18 @@ def main():
     # ==========================================
     with tabs[2]:
         if st.session_state.submitted_front:
-            show_completion_screen("初考(櫃檯)已完成", "案件已移交給覆考主管。")
+            # 傳入 unique_key="btn_back_front"
+            show_completion_screen("初考(櫃檯)已完成", "案件已移交給覆考主管。", "btn_back_front")
         else:
             st.header("🖥️ 初考主管審核 (櫃檯組)")
             add_security_watermark("櫃檯主管考核")
             pwd_front = st.text_input("🔒 櫃檯主管密碼", type="password", key="pwd_front")
             
-            if pwd_front == "3333": # 密碼B
+            if pwd_front == "3333": 
                 data = load_data_from_sheet(worksheet)
                 df_all = pd.DataFrame(data)
 
                 if not df_all.empty and "目前狀態" in df_all.columns and "初考組別" in df_all.columns:
-                    # 篩選：狀態為待初考 AND 組別為櫃檯
                     pending_df = df_all[
                         (df_all["目前狀態"] == "待初考") & 
                         (df_all["初考組別"] == "櫃檯")
@@ -536,7 +540,8 @@ def main():
     # ==========================================
     with tabs[3]:
         if st.session_state.submitted_sec:
-            show_completion_screen("覆考已完成", "案件已移交給老闆核決。")
+            # 傳入 unique_key="btn_back_sec"
+            show_completion_screen("覆考已完成", "案件已移交給老闆核決。", "btn_back_sec")
         else:
             st.header("👩‍⚕️ 覆考主管 (護理長) 審核區")
             add_security_watermark("護理長考核")
@@ -631,7 +636,8 @@ def main():
     # ==========================================
     with tabs[4]:
         if st.session_state.submitted_boss:
-            show_completion_screen("核決已完成", "考核流程圓滿結束！")
+            # 傳入 unique_key="btn_back_boss"
+            show_completion_screen("核決已完成", "考核流程圓滿結束！", "btn_back_boss")
         else:
             st.header("🏆 老闆核決區")
             add_security_watermark("老闆核決中")
