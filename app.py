@@ -216,6 +216,11 @@ def init_session_state():
             st.session_state[k] = 0 if "counter" in k else False
 
 def show_guidelines():
+    """依據 PDF 內容顯示評分標準與職能定義"""
+    
+    # [關鍵修改] 警語移出 expander，置頂顯示
+    st.error("⚠️ 本考核表內容屬診所機密，嚴禁翻拍外流")
+    
     with st.expander("📖 查看評分標準與職能定義說明", expanded=False):
         tab_a, tab_b = st.tabs(["📊 分數級距定義", "📝 職能定義說明"])
         with tab_a:
@@ -237,8 +242,6 @@ def show_guidelines():
             ### 3. 行政職能
             * **基礎行政**：具備確保診所日常營運穩定的專業能力，能完成行政與支援工作，並有效執行主管交辦任務。
             * **應變與支援**：同時具備高度應變與問題解決能力，能即時處理突發需求，主動支援並展現團隊合作精神。
-            
-            *(本考核表內容屬診所機密，嚴禁翻拍外流)*
             """)
 
 def get_assessment_items():
@@ -734,12 +737,11 @@ def main():
                 if pending_df.empty:
                     st.info(f"🎉 目前沒有 {view_mode}。")
                 else:
-                    # [V23 Feature] 1. 日期處理 & 排序
+                    # 1. 日期排序 (新 -> 舊)
                     pending_df["dt_obj"] = pd.to_datetime(pending_df["日期"], errors='coerce').dt.date
-                    pending_df = pending_df.sort_values(by="dt_obj", ascending=False) # 最新在最上
+                    pending_df = pending_df.sort_values(by="dt_obj", ascending=False)
 
-                    # [V23 Feature] 2. 日期範圍篩選
-                    # 避免全空時報錯
+                    # 2. 日期篩選
                     if not pending_df["dt_obj"].dropna().empty:
                         min_date = pending_df["dt_obj"].min()
                         max_date = pending_df["dt_obj"].max()
@@ -747,10 +749,8 @@ def main():
                         st.markdown("### 🔍 篩選與選擇")
                         c1, c2 = st.columns([1, 2])
                         with c1:
-                            # 日期篩選器
                             date_range = st.date_input("📅 篩選日期範圍", [min_date, max_date])
                         
-                        # 只有當選了兩個日期才進行篩選
                         if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
                             start_d, end_d = date_range
                             pending_df = pending_df[
@@ -764,12 +764,21 @@ def main():
                         target_options = [f"{row['姓名']} ({row['日期']})" for i, row in pending_df.iterrows()]
                         selected_target = st.selectbox("請選擇對象", target_options, key="sel_boss")
                         
-                        # 解析選擇的對象 (姓名+日期)
                         target_name = selected_target.split(" (")[0]
                         target_date_str = selected_target.split(" (")[1].replace(")", "")
-                        
-                        # 重新抓取該筆資料 (因為 pending_df 已經被 filter 過，直接用比較安全)
                         record = pending_df[(pending_df["姓名"] == target_name) & (pending_df["日期"] == target_date_str)].iloc[0]
+
+                        # --- 歷史趨勢圖 (只在歷史模式顯示) ---
+                        if view_mode == "歷史已完成案件":
+                            st.markdown("### 📈 該員工歷史成績趨勢")
+                            # 找出該員工所有歷史資料
+                            history_df = df_all[df_all["姓名"] == target_name].copy()
+                            history_df["dt_obj"] = pd.to_datetime(history_df["日期"], errors='coerce')
+                            history_df = history_df.sort_values("dt_obj") # 舊到新畫圖
+                            
+                            if not history_df.empty:
+                                chart_data = history_df[["dt_obj", "最終總分"]].set_index("dt_obj")
+                                st.line_chart(chart_data)
 
                         st.markdown("---")
                         
@@ -806,6 +815,15 @@ def main():
                             col4.metric("🏆 最終總分", f"{real_final} / {f_max}")
                             st.success(f"📌 最終建議：{record.get('最終建議', '')}")
                             st.success(f"🏅 最終考績：{record.get('最終考績', '未評定')}")
+                            
+                            # --- 下載按鈕 ---
+                            csv = pending_df.to_csv(index=False).encode('utf-8-sig')
+                            st.download_button(
+                                label="📥 下載本頁搜尋結果 (Excel/CSV)",
+                                data=csv,
+                                file_name=f"assessment_export_{date.today()}.csv",
+                                mime="text/csv",
+                            )
                             
                             st.markdown("### 詳細成績單")
                             items = get_assessment_items()
